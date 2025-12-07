@@ -552,9 +552,6 @@ func (s *ProxyService) ProxyStreamRequestWithClaudeConversion(requestBody []byte
 		return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 	}
 
-	// 清理路由 API URL（移除末尾斜杠）
-	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
-
 	log.Infof("=== STREAM ROUTE TARGET ===")
 	log.Infof("Stream target URL: %s", buildOpenAIChatURL(route.APIUrl))
 	log.Infof("Stream route name: %s", route.Name)
@@ -567,7 +564,7 @@ func (s *ProxyService) ProxyStreamRequestWithClaudeConversion(requestBody []byte
 	log.Infof("=== STREAM ROUTE TARGET END ===")
 
 	// 创建代理请求
-	proxyReq, err := http.NewRequest("POST", cleanAPIUrl+"/v1/chat/completions", bytes.NewReader(requestBody))
+	proxyReq, err := http.NewRequest("POST", buildOpenAIChatURL(route.APIUrl), bytes.NewReader(requestBody))
 	if err != nil {
 		return err
 	}
@@ -1220,6 +1217,9 @@ func (s *ProxyService) streamOpenAIToClaude(reader io.Reader, writer io.Writer, 
 
 // FetchRemoteModels 获取远程模型列表
 func (s *ProxyService) FetchRemoteModels(apiUrl, apiKey string) ([]string, error) {
+	// 记录原始 URL 是否以 "/" 结尾
+	hasTrailingSlash := strings.HasSuffix(apiUrl, "/")
+
 	// 移除末尾的斜杠
 	apiUrl = strings.TrimSuffix(apiUrl, "/")
 
@@ -1228,7 +1228,14 @@ func (s *ProxyService) FetchRemoteModels(apiUrl, apiKey string) ([]string, error
 		apiUrl = "https://" + apiUrl
 	}
 
-	url := apiUrl + "/v1/models"
+	// 构建 URL：如果原始 URL 末尾有 "/"，说明用户已指定完整路径，只加 /models
+	// 否则加上 /v1/models
+	var url string
+	if hasTrailingSlash {
+		url = apiUrl + "/models"
+	} else {
+		url = apiUrl + "/v1/models"
+	}
 	log.Infof("Fetching models from: %s", url)
 
 	req, err := http.NewRequest("GET", url, nil)
