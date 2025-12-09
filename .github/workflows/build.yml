@@ -61,14 +61,11 @@ jobs:
           echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
           echo "release_body=$RELEASE_BODY" >> $GITHUB_OUTPUT
 
-  # Windows builds (amd64 and arm64)
-  build-windows:
+  # Windows amd64 build (with icon)
+  build-windows-amd64:
     needs: check-build
     if: needs.check-build.outputs.should_build == 'true'
     runs-on: windows-latest
-    strategy:
-      matrix:
-        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
       
@@ -101,25 +98,71 @@ jobs:
       
       - name: Generate Windows resources (icon + manifest)
         run: |
-          rsrc -ico build\windows\icon.ico -manifest build\windows\anyproxyai.exe.manifest -o rsrc_windows_${{ matrix.arch }}.syso
+          rsrc -ico build\windows\icon.ico -manifest build\windows\anyproxyai.exe.manifest -o rsrc_windows_amd64.syso
       
-      - name: Build Windows ${{ matrix.arch }}
+      - name: Build Windows amd64
         env:
           GOOS: windows
-          GOARCH: ${{ matrix.arch }}
+          GOARCH: amd64
           CGO_ENABLED: 0
         run: |
-          go build -ldflags "-s -w -H windowsgui" -o build\bin\anyproxyai-windows-${{ matrix.arch }}.exe .
+          go build -ldflags "-s -w -H windowsgui" -o build\bin\anyproxyai-windows-amd64.exe .
       
       - name: Clean up syso
         run: |
-          if (Test-Path "rsrc_windows_${{ matrix.arch }}.syso") { Remove-Item "rsrc_windows_${{ matrix.arch }}.syso" }
+          if (Test-Path "rsrc_windows_amd64.syso") { Remove-Item "rsrc_windows_amd64.syso" }
       
-      - name: Upload Windows ${{ matrix.arch }} artifact
+      - name: Upload Windows amd64 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anyproxyai-windows-${{ matrix.arch }}
-          path: build/bin/anyproxyai-windows-${{ matrix.arch }}.exe
+          name: anyproxyai-windows-amd64
+          path: build/bin/anyproxyai-windows-amd64.exe
+
+  # Windows arm64 build (without icon - rsrc doesn't support arm64)
+  build-windows-arm64:
+    needs: check-build
+    if: needs.check-build.outputs.should_build == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+          cache-dependency-path: go.sum
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm install
+      
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+      
+      - name: Build Windows arm64
+        env:
+          GOOS: windows
+          GOARCH: arm64
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags "-s -w -H windowsgui" -o build\bin\anyproxyai-windows-arm64.exe .
+      
+      - name: Upload Windows arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyproxyai-windows-arm64
+          path: build/bin/anyproxyai-windows-arm64.exe
 
   # macOS builds (arm64 and amd64)
   build-macos:
@@ -250,56 +293,9 @@ jobs:
           name: anyproxyai-linux-amd64
           path: build/bin/anyproxyai-linux-amd64
 
-  # Linux arm64 build
-  build-linux-arm64:
-    needs: check-build
-    if: needs.check-build.outputs.should_build == 'true'
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-          cache: true
-          cache-dependency-path: go.sum
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-      
-      - name: Install cross-compilation dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
-      
-      - name: Install frontend dependencies
-        run: cd frontend && npm install
-      
-      - name: Build frontend
-        run: cd frontend && npm run build
-      
-      - name: Build Linux arm64
-        run: |
-          export CGO_ENABLED=0
-          export GOOS=linux
-          export GOARCH=arm64
-          go build -ldflags "-s -w" -o build/bin/anyproxyai-linux-arm64 .
-      
-      - name: Upload Linux arm64 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: anyproxyai-linux-arm64
-          path: build/bin/anyproxyai-linux-arm64
-
   # Release job
   release:
-    needs: [check-build, build-windows, build-macos, build-linux-amd64, build-linux-arm64]
+    needs: [check-build, build-windows-amd64, build-windows-arm64, build-macos, build-linux-amd64]
     runs-on: ubuntu-latest
     if: needs.check-build.outputs.should_release == 'true'
     steps:
@@ -319,7 +315,6 @@ jobs:
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          # Check if tag exists
           if git rev-parse "${{ needs.check-build.outputs.release_tag }}" >/dev/null 2>&1; then
             echo "Tag ${{ needs.check-build.outputs.release_tag }} already exists, skipping creation"
           else
@@ -346,13 +341,13 @@ jobs:
             | macOS | arm64 (Apple Silicon) | anyproxyai-darwin-arm64.zip |
             | macOS | amd64 (Intel) | anyproxyai-darwin-amd64.zip |
             | Linux | amd64 | anyproxyai-linux-amd64 |
-            | Linux | arm64 | anyproxyai-linux-arm64 |
+            
+            > 注意: Windows arm64 版本不包含图标（rsrc 工具限制）
           files: |
             artifacts/anyproxyai-windows-amd64/*
             artifacts/anyproxyai-windows-arm64/*
             artifacts/anyproxyai-darwin-arm64/*
             artifacts/anyproxyai-darwin-amd64/*
             artifacts/anyproxyai-linux-amd64/*
-            artifacts/anyproxyai-linux-arm64/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
