@@ -7,7 +7,7 @@
 [![构建状态](https://github.com/cniu6/anyproxyai/workflows/Build%20All%20Platforms/badge.svg)](https://github.com/cniu6/anyproxyai/actions)
 [![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go 版本](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev/)
-[![Wails](https://img.shields.io/badge/Wails-v2-blue)](https://wails.io/)
+[![Wails](https://img.shields.io/badge/Wails-v3-blue)](https://wails.io/)
 
 [English](README.md) | [简体中文](README_CN.md)
 

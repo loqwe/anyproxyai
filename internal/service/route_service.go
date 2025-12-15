@@ -63,6 +63,25 @@ func (s *RouteService) GetRouteByModel(model string) (*database.ModelRoute, erro
 	return &route, nil
 }
 
+// GetRouteByID 根据路由ID获取路由
+func (s *RouteService) GetRouteByID(id int64) (*database.ModelRoute, error) {
+	query := `SELECT id, name, model, api_url, api_key, "group", COALESCE(format, 'openai'), enabled, created_at, updated_at
+	          FROM model_routes WHERE id = ? AND enabled = 1`
+
+	var route database.ModelRoute
+	err := s.db.QueryRow(query, id).Scan(&route.ID, &route.Name, &route.Model, &route.APIUrl,
+		&route.APIKey, &route.Group, &route.Format, &route.Enabled, &route.CreatedAt, &route.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("route not found: %d", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &route, nil
+}
+
 // AddRoute 添加路由
 func (s *RouteService) AddRoute(name, model, apiUrl, apiKey, group, format string) error {
 	query := `INSERT INTO model_routes (name, model, api_url, api_key, "group", format, enabled, created_at, updated_at)

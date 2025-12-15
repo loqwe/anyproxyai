@@ -47,9 +47,11 @@ const createWailsShim = () => {
     
     // Configuration
     GetConfig: () => callService('GetConfig'),
-    UpdateConfig: (redirectEnabled, redirectKeyword, redirectTargetModel) => 
-      callService('UpdateConfig', redirectEnabled, redirectKeyword, redirectTargetModel),
+    UpdateConfig: (redirectEnabled, redirectKeyword, redirectTargetModel, redirectTargetRouteId) => 
+      callService('UpdateConfig', redirectEnabled, redirectKeyword, redirectTargetModel, redirectTargetRouteId),
+    UpdatePort: (port) => callService('UpdatePort', port),
     UpdateLocalApiKey: (newApiKey) => callService('UpdateLocalApiKey', newApiKey),
+    RestartApp: () => callService('RestartApp'),
     
     // App settings
     GetAppSettings: () => callService('GetAppSettings'),

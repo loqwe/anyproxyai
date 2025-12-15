@@ -1,4 +1,4 @@
-package service
+﻿package service
 
 import (
 	"bufio"
@@ -33,6 +33,26 @@ func NewProxyService(routeService *RouteService, cfg *config.Config) *ProxyServi
 	}
 }
 
+// getRedirectRoute 获取重定向目标路�?
+// 如果配置�?RedirectTargetRouteID，优先使用该ID获取路由
+// 否则根据 RedirectTargetModel 查找路由
+func (s *ProxyService) getRedirectRoute() (*database.ModelRoute, error) {
+	// 优先使用指定的路由ID
+	if s.config.RedirectTargetRouteID > 0 {
+		route, err := s.routeService.GetRouteByID(s.config.RedirectTargetRouteID)
+		if err == nil {
+			return route, nil
+		}
+		log.Warnf("Failed to get route by ID %d, falling back to model lookup: %v", s.config.RedirectTargetRouteID, err)
+	}
+
+	// 回退到按模型名查�?
+	if s.config.RedirectTargetModel == "" {
+		return nil, fmt.Errorf("redirect target model not configured")
+	}
+	return s.routeService.GetRouteByModel(s.config.RedirectTargetModel)
+}
+
 // ProxyRequest 代理请求
 func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]string) ([]byte, int, error) {
 	// 解析请求
@@ -61,43 +81,49 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 	log.Infof("Request body: %s", string(requestBody))
 	log.Infof("=== PROXY REQUEST DETAILS ===")
 
-	// 提取真实的模型名（处理 Gemini streamGenerateContent 的情况）
+	// 提取真实的模型名（处�?Gemini streamGenerateContent 的情况）
 	realModel := model
 	if strings.Contains(model, ":streamGenerateContent") {
 		realModel = strings.TrimSuffix(model, ":streamGenerateContent")
 	}
 
-	// 首先检查是否是重定向关键字（支持带后缀的模型名）
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return nil, http.StatusNotFound, fmt.Errorf("redirect target model not configured")
+	// 首先检查是否是重定向关键字（支持带后缀的模型名�?
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		// 使用重定向路�?
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return nil, http.StatusNotFound, fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 
-		// 重新编码请求体
+		// 重新编码请求�?
 		requestBody, _ = json.Marshal(reqData)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			availableModels, _ := s.routeService.GetAvailableModels()
+			return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+		}
 	}
 
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		availableModels, _ := s.routeService.GetAvailableModels()
-		return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
-	}
-
-	// 检查是否需要进行 API 转换
+	// 检查是否需要进�?API 转换
 	var transformedBody []byte
 	var targetURL string
 
 	// 清理路由 API URL（移除末尾斜杠）
 	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
 
-	// 智能检测适配器: 基于路由format和请求格式 (OpenAI格式请求)
+	// 智能检测适配�? 基于路由format和请求格�?(OpenAI格式请求)
 	adapterName := s.detectAdapterForRoute(route, "openai")
 	if adapterName != "" {
-		// 使用适配器转换请求
+		// 使用适配器转换请�?
 		adapter := adapters.GetAdapter(adapterName)
 		transformedReq, err := adapter.AdaptRequest(reqData, model)
 		if err != nil {
@@ -112,7 +138,7 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 		targetURL = buildOpenAIChatURL(route.APIUrl)
 	}
 
-	// 详细日志：记录目标路由信息
+	// 详细日志：记录目标路由信�?
 	log.Infof("=== ROUTE TARGET ===")
 	log.Infof("Target URL: %s", targetURL)
 	log.Infof("Route name: %s", route.Name)
@@ -133,17 +159,17 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// 设置请求头
+	// 设置请求�?
 	proxyReq.Header.Set("Content-Type", "application/json")
 
-	// 使用路由配置的 API Key（如果有），否则透传原始 Authorization
+	// 使用路由配置�?API Key（如果有），否则透传原始 Authorization
 	if route.APIKey != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+route.APIKey)
 	} else if auth := headers["Authorization"]; auth != "" {
 		proxyReq.Header.Set("Authorization", auth)
 	}
 
-	// 发送请求
+	// 发送请�?
 	startTime := time.Now()
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
@@ -158,7 +184,7 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// 详细日志：记录返回结果
+	// 详细日志：记录返回结�?
 	log.Infof("=== RESPONSE RESULT ===")
 	log.Infof("Response status code: %d", resp.StatusCode)
 	log.Infof("Response time: %v", time.Since(startTime))
@@ -224,7 +250,7 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 
 	originalModel := model
 
-	// 详细日志：记录流式请求开始
+	// 详细日志：记录流式请求开�?
 	log.Infof("=== STREAM PROXY REQUEST START ===")
 	log.Infof("Stream request model: %s", originalModel)
 	log.Infof("Stream request headers:")
@@ -245,26 +271,31 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 		requestBody, _ = json.Marshal(reqData)
-	}
-
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		// 检查是否是"模型未找到"错误
-		if strings.Contains(err.Error(), "model not found") {
-			availableModels, _ := s.routeService.GetAvailableModels()
-			return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			// 检查是否是"模型未找到"错误
+			if strings.Contains(err.Error(), "model not found") {
+				availableModels, _ := s.routeService.GetAvailableModels()
+				return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+			}
+			// 其他路由相关错误
+			return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 		}
-		// 其他路由相关错误
-		return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 	}
 
 	// 清理路由 API URL（移除末尾斜杠）
@@ -276,7 +307,7 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 	var targetURL string
 
 	if adapterName != "" {
-		// 使用适配器转换请求
+		// 使用适配器转换请�?
 		adapter := adapters.GetAdapter(adapterName)
 		if adapter == nil {
 			return fmt.Errorf("adapter not found: %s", adapterName)
@@ -300,7 +331,7 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 		log.Infof("Streaming to: %s (route: %s)", targetURL, route.Name)
 	}
 
-	// 详细日志：记录流式请求目标路由信息
+	// 详细日志：记录流式请求目标路由信�?
 	log.Infof("=== STREAM ROUTE TARGET ===")
 	log.Infof("Stream target URL: %s", targetURL)
 	log.Infof("Stream route name: %s", route.Name)
@@ -326,12 +357,12 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 		proxyReq.Header.Set("Authorization", auth)
 	}
 
-	// Claude需要特殊的版本头
+	// Claude需要特殊的版本�?
 	if adapterName == "anthropic" {
 		proxyReq.Header.Set("anthropic-version", "2023-06-01")
 	}
 
-	// 发送请求
+	// 发送请�?
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		return err
@@ -344,17 +375,17 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 	}
 
 	// 流式传输响应
-	// 使用实际路由到的模型名（model）用于统计
+	// 使用实际路由到的模型名（model）用于统�?
 	if adapterName != "" {
-		// 需要转换SSE流
+		// 需要转换SSE�?
 		return s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID)
 	} else {
-		// 直接转发SSE流
+		// 直接转发SSE�?
 		return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
 	}
 }
 
-// ProxyStreamRequestWithAdapter 代理流式请求，使用指定的适配器
+// ProxyStreamRequestWithAdapter 代理流式请求，使用指定的适配�?
 func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers map[string]string, writer io.Writer, flusher http.Flusher, forceAdapter string) error {
 	// 解析请求
 	var reqData map[string]interface{}
@@ -369,7 +400,7 @@ func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers
 
 	originalModel := model
 
-	// 详细日志：记录流式请求开始
+	// 详细日志：记录流式请求开�?
 	log.Infof("=== STREAM PROXY REQUEST START (FORCED ADAPTER: %s) ===", forceAdapter)
 	log.Infof("Stream request model: %s", originalModel)
 	log.Infof("Stream request headers:")
@@ -390,26 +421,31 @@ func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 		requestBody, _ = json.Marshal(reqData)
-	}
-
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		// 检查是否是"模型未找到"错误
-		if strings.Contains(err.Error(), "model not found") {
-			availableModels, _ := s.routeService.GetAvailableModels()
-			return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			// 检查是否是"模型未找到"错误
+			if strings.Contains(err.Error(), "model not found") {
+				availableModels, _ := s.routeService.GetAvailableModels()
+				return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+			}
+			// 其他路由相关错误
+			return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 		}
-		// 其他路由相关错误
-		return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 	}
 
 	// 清理路由 API URL（移除末尾斜杠）
@@ -421,7 +457,7 @@ func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers
 	var adapter adapters.Adapter
 
 	if forceAdapter != "" {
-		// 使用指定的适配器转换请求
+		// 使用指定的适配器转换请�?
 		adapter = adapters.GetAdapter(forceAdapter)
 		if adapter == nil {
 			return fmt.Errorf("forced adapter not found: %s", forceAdapter)
@@ -447,7 +483,7 @@ func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers
 	}
 	log.Infof("Streaming to: %s (route: %s, adapter: %s)", targetURL, route.Name, forceAdapter)
 
-	// 详细日志：记录流式请求目标路由信息
+	// 详细日志：记录流式请求目标路由信�?
 	log.Infof("=== STREAM ROUTE TARGET ===")
 	log.Infof("Stream target URL: %s", targetURL)
 	log.Infof("Stream route name: %s", route.Name)
@@ -473,12 +509,12 @@ func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers
 		proxyReq.Header.Set("Authorization", auth)
 	}
 
-	// Claude需要特殊的版本头
+	// Claude需要特殊的版本�?
 	if forceAdapter == "anthropic" {
 		proxyReq.Header.Set("anthropic-version", "2023-06-01")
 	}
 
-	// 发送请求
+	// 发送请�?
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		return err
@@ -490,7 +526,7 @@ func (s *ProxyService) ProxyStreamRequestWithAdapter(requestBody []byte, headers
 		return fmt.Errorf("backend error: %d - %s", resp.StatusCode, string(body))
 	}
 
-	// 需要转换SSE流，使用实际路由到的模型名
+	// 需要转换SSE流，使用实际路由到的模型�?
 	return s.streamWithAdapter(resp.Body, writer, flusher, "openai-to-claude", model, route.ID)
 }
 
@@ -509,7 +545,7 @@ func (s *ProxyService) ProxyStreamRequestWithClaudeConversion(requestBody []byte
 
 	originalModel := model
 
-	// 详细日志：记录流式请求开始
+	// 详细日志：记录流式请求开�?
 	log.Infof("=== STREAM PROXY REQUEST START (CLAUDE CONVERSION) ===")
 	log.Infof("Stream request model: %s", originalModel)
 	log.Infof("Stream request headers:")
@@ -530,26 +566,31 @@ func (s *ProxyService) ProxyStreamRequestWithClaudeConversion(requestBody []byte
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 		requestBody, _ = json.Marshal(reqData)
-	}
-
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		// 检查是否是"模型未找到"错误
-		if strings.Contains(err.Error(), "model not found") {
-			availableModels, _ := s.routeService.GetAvailableModels()
-			return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			// 检查是否是"模型未找到"错误
+			if strings.Contains(err.Error(), "model not found") {
+				availableModels, _ := s.routeService.GetAvailableModels()
+				return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+			}
+			// 其他路由相关错误
+			return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 		}
-		// 其他路由相关错误
-		return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 	}
 
 	log.Infof("=== STREAM ROUTE TARGET ===")
@@ -576,7 +617,7 @@ func (s *ProxyService) ProxyStreamRequestWithClaudeConversion(requestBody []byte
 		proxyReq.Header.Set("Authorization", auth)
 	}
 
-	// 发送请求
+	// 发送请�?
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		return err
@@ -588,7 +629,7 @@ func (s *ProxyService) ProxyStreamRequestWithClaudeConversion(requestBody []byte
 		return fmt.Errorf("backend error: %d - %s", resp.StatusCode, string(body))
 	}
 
-	// 需要转换SSE流，使用实际路由到的模型名
+	// 需要转换SSE流，使用实际路由到的模型�?
 	return s.streamWithAdapter(resp.Body, writer, flusher, "openai-to-claude", model, route.ID)
 }
 
@@ -614,34 +655,39 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 	}
 
 	// 首先检查是否是重定向关键字（支持带后缀的模型名）
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return nil, http.StatusNotFound, fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return nil, http.StatusNotFound, fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 
 		// 重新编码请求体
 		requestBody, _ = json.Marshal(reqData)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			availableModels, _ := s.routeService.GetAvailableModels()
+			return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+		}
 	}
 
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		availableModels, _ := s.routeService.GetAvailableModels()
-		return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
-	}
-
-	// 检测是否需要进行 API 转换
-	// 对于 Anthropic 接口，我们收到的是 Anthropic 格式的请求
+	// 检测是否需要进�?API 转换
+	// 对于 Anthropic 接口，我们收到的�?Anthropic 格式的请�?
 	var transformedBody []byte
 	var targetURL string
 
 	// 清理路由 API URL（移除末尾斜杠）
 	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
 
-	// 智能检测适配器: 请求来自Claude格式,检测目标格式
+	// 智能检测适配�? 请求来自Claude格式,检测目标格�?
 	adapterName := s.detectAdapterForRoute(route, "claude")
 
 	if adapterName == "" {
@@ -650,7 +696,7 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 		targetURL = buildClaudeMessagesURL(cleanAPIUrl)
 		log.Infof("Forwarding Anthropic request directly (no conversion needed)")
 	} else if adapterName == "claude-to-openai" {
-		// 上游是 OpenAI 格式，需要将 Anthropic 格式转换成 OpenAI 格式
+		// 上游�?OpenAI 格式，需要将 Anthropic 格式转换�?OpenAI 格式
 		adapter := adapters.GetAdapter("claude-to-openai")
 		if adapter == nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("claude-to-openai adapter not found")
@@ -665,7 +711,7 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 		targetURL = buildOpenAIChatURL(route.APIUrl)
 		log.Infof("Converting Anthropic request to OpenAI format for upstream")
 	} else {
-		// 其他适配器暂不支持
+		// 其他适配器暂不支�?
 		log.Warnf("Unsupported adapter for Anthropic request: %s", adapterName)
 		transformedBody = requestBody
 		targetURL = buildClaudeMessagesURL(cleanAPIUrl)
@@ -679,22 +725,22 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// 设置请求头
+	// 设置请求�?
 	proxyReq.Header.Set("Content-Type", "application/json")
 
-	// 使用路由配置的 API Key（如果有），否则透传原始 Authorization
+	// 使用路由配置�?API Key（如果有），否则透传原始 Authorization
 	if route.APIKey != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+route.APIKey)
 	} else if auth := headers["Authorization"]; auth != "" {
 		proxyReq.Header.Set("Authorization", auth)
 	}
 
-	// Claude需要特殊的版本头
+	// Claude需要特殊的版本�?
 	if adapterName == "" && normalizeFormat(route.Format) == "claude" {
 		proxyReq.Header.Set("anthropic-version", "2023-06-01")
 	}
 
-	// 发送请求
+	// 发送请�?
 	startTime := time.Now()
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
@@ -711,7 +757,7 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 
 	log.Infof("Response received from %s in %v, status: %d", route.Name, time.Since(startTime), resp.StatusCode)
 
-	// 记录使用情况和响应转换（如果上游是 OpenAI 格式）
+	// 记录使用情况和响应转换（如果上游�?OpenAI 格式�?
 	if resp.StatusCode == http.StatusOK {
 		var respData map[string]interface{}
 		if err := json.Unmarshal(responseBody, &respData); err == nil {
@@ -730,10 +776,10 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 				}
 			}
 
-			// 如果使用了claude-to-openai适配器,说明上游是OpenAI格式,需要将响应转换为 Anthropic 格式
+			// 如果使用了claude-to-openai适配�?说明上游是OpenAI格式,需要将响应转换�?Anthropic 格式
 			if adapterName == "claude-to-openai" {
 				log.Infof("Converting OpenAI response to Anthropic format for /api/anthropic endpoint")
-				// 将 OpenAI 格式响应转换为 Anthropic 格式
+				// �?OpenAI 格式响应转换�?Anthropic 格式
 				anthropicResp := s.convertOpenAIToAnthropicResponse(respData)
 				if convertedBody, err := json.Marshal(anthropicResp); err == nil {
 					log.Infof("Successfully converted response to Anthropic format")
@@ -749,7 +795,7 @@ func (s *ProxyService) ProxyAnthropicRequest(requestBody []byte, headers map[str
 		s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, string(responseBody))
 	}
 
-	// 对于 Anthropic 上游或转换失败的情况，返回原始响应
+	// 对于 Anthropic 上游或转换失败的情况，返回原始响�?
 	log.Infof("Returning original response (adapter=%s)", adapterName)
 	return responseBody, resp.StatusCode, nil
 }
@@ -778,32 +824,37 @@ func (s *ProxyService) ProxyAnthropicStreamRequest(requestBody []byte, headers m
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 		requestBody, _ = json.Marshal(reqData)
-	}
-
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		// 检查是否是"模型未找到"错误
-		if strings.Contains(err.Error(), "model not found") {
-			availableModels, _ := s.routeService.GetAvailableModels()
-			return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			// 检查是否是"模型未找到"错误
+			if strings.Contains(err.Error(), "model not found") {
+				availableModels, _ := s.routeService.GetAvailableModels()
+				return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+			}
+			// 其他路由相关错误
+			return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 		}
-		// 其他路由相关错误
-		return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 	}
 
 	// 清理路由 API URL（移除末尾斜杠）
 	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
 
-	// 智能检测适配器: 请求来自 Claude 格式 (因为是 /api/anthropic 路径)
+	// 智能检测适配�? 请求来自 Claude 格式 (因为�?/api/anthropic 路径)
 	adapterName := s.detectAdapterForRoute(route, "claude")
 	var transformedBody []byte
 	var targetURL string
@@ -811,7 +862,7 @@ func (s *ProxyService) ProxyAnthropicStreamRequest(requestBody []byte, headers m
 	log.Infof("[Anthropic Stream] Request format: claude, Route format: %s, Adapter: %s", route.Format, adapterName)
 
 	if adapterName == "claude-to-openai" {
-		// 目标是 OpenAI 格式，需要将 Claude 请求转换为 OpenAI 格式
+		// 目标�?OpenAI 格式，需要将 Claude 请求转换�?OpenAI 格式
 		adapter := adapters.GetAdapter("claude-to-openai")
 		if adapter == nil {
 			return fmt.Errorf("adapter not found: claude-to-openai")
@@ -828,13 +879,13 @@ func (s *ProxyService) ProxyAnthropicStreamRequest(requestBody []byte, headers m
 		targetURL = buildOpenAIChatURL(route.APIUrl)
 		log.Infof("Streaming to: %s (route: %s, adapter: claude-to-openai)", targetURL, route.Name)
 	} else {
-		// 目标也是 Claude 格式，直接透传到 /v1/messages
+		// 目标也是 Claude 格式，直接透传�?/v1/messages
 		transformedBody = requestBody
 		targetURL = buildClaudeMessagesURL(cleanAPIUrl)
 		log.Infof("Streaming to: %s (route: %s, passthrough)", targetURL, route.Name)
 	}
 
-	// 详细日志：记录流式请求目标路由信息
+	// 详细日志：记录流式请求目标路由信�?
 	log.Infof("=== STREAM ROUTE TARGET ===")
 	log.Infof("Stream target URL: %s", targetURL)
 	log.Infof("Stream route name: %s", route.Name)
@@ -860,12 +911,12 @@ func (s *ProxyService) ProxyAnthropicStreamRequest(requestBody []byte, headers m
 		proxyReq.Header.Set("Authorization", auth)
 	}
 
-	// Claude需要特殊的版本头
+	// Claude需要特殊的版本�?
 	if adapterName == "anthropic" {
 		proxyReq.Header.Set("anthropic-version", "2023-06-01")
 	}
 
-	// 发送请求
+	// 发送请�?
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		return err
@@ -878,21 +929,21 @@ func (s *ProxyService) ProxyAnthropicStreamRequest(requestBody []byte, headers m
 	}
 
 	// 根据适配器决定如何处理响应流
-	// 使用实际路由到的模型名（model）而不是原始请求的模型名（originalModel）用于统计
-	_ = originalModel // 保留原始模型名用于响应
+	// 使用实际路由到的模型名（model）而不是原始请求的模型名（originalModel）用于统�?
+	_ = originalModel // 保留原始模型名用于响�?
 	if adapterName == "claude-to-openai" {
-		// 需要将 OpenAI 流式响应转换为 Claude 流式响应
+		// 需要将 OpenAI 流式响应转换�?Claude 流式响应
 		log.Infof("[Anthropic Stream] Converting OpenAI stream response to Claude format")
 		return s.streamOpenAIToClaude(resp.Body, writer, flusher, model, route.ID)
 	}
 
-	// 直接转发SSE流（目标是 Claude 格式，无需转换）
+	// 直接转发SSE流（目标�?Claude 格式，无需转换�?
 	return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
 }
 
-// streamWithAdapter 使用适配器处理流式响应
+// streamWithAdapter 使用适配器处理流式响�?
 func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flusher http.Flusher, adapterName, model string, routeID int64) error {
-	// 获取反向适配器（用于响应转换）
+	// 获取反向适配器（用于响应转换�?
 	// 例如：请求用 openai-to-claude，响应应该用 claude-to-openai
 	reverseAdapterName := getReverseAdapterName(adapterName)
 	if reverseAdapterName == "" {
@@ -906,7 +957,7 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 		return fmt.Errorf("adapter not found: %s", reverseAdapterName)
 	}
 
-	// 发送开始事件
+	// 发送开始事�?
 	startEvents := adapter.AdaptStreamStart(model)
 	log.Infof("[Stream Adapter] Sending %d start events", len(startEvents))
 	for _, event := range startEvents {
@@ -939,10 +990,10 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 
 		log.Infof("[Stream Adapter] Processing data line: %s", line)
 
-		// 处理SSE格式: "data: {...}" 或 "data:{...}"
+		// 处理SSE格式: "data: {...}" �?"data:{...}"
 		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimPrefix(line, "data:")
-			data = strings.TrimSpace(data) // 去掉可能的空格
+			data = strings.TrimSpace(data) // 去掉可能的空�?
 
 			// 检查是否是结束标记
 			if data == "[DONE]" {
@@ -960,10 +1011,10 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 				continue
 			}
 
-			// 从原始chunk中提取token使用信息（适配器转换前）
-			// 根据反向适配器判断远端格式
+			// 从原始chunk中提取token使用信息（适配器转换前�?
+			// 根据反向适配器判断远端格�?
 			if strings.HasPrefix(reverseAdapterName, "claude-") || reverseAdapterName == "anthropic" {
-				// 远端是 Claude 格式
+				// 远端�?Claude 格式
 				if chunkType, ok := chunk["type"].(string); ok {
 					switch chunkType {
 					case "message_start":
@@ -985,7 +1036,7 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 					}
 				}
 			} else if strings.HasPrefix(reverseAdapterName, "gemini-") || reverseAdapterName == "gemini" {
-				// 远端是 Gemini 格式
+				// 远端�?Gemini 格式
 				if usageMetadata, ok := chunk["usageMetadata"].(map[string]interface{}); ok {
 					if promptTokens, ok := usageMetadata["promptTokenCount"].(float64); ok {
 						totalPromptTokens = int(promptTokens)
@@ -1006,7 +1057,7 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 
 			log.Infof("[Stream Adapter] Adapter returned: adaptedChunk=%v (is nil: %v)", adaptedChunk, adaptedChunk == nil)
 
-			// 只有当 adaptedChunk 不为 nil 时才发送
+			// 只有�?adaptedChunk 不为 nil 时才发�?
 			if adaptedChunk != nil {
 				chunkCount++
 				// 发送转换后的chunk
@@ -1027,7 +1078,7 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 		return err
 	}
 
-	// 发送结束事件
+	// 发送结束事�?
 	endEvents := adapter.AdaptStreamEnd()
 	for _, event := range endEvents {
 		eventData, _ := json.Marshal(event)
@@ -1072,10 +1123,10 @@ func (s *ProxyService) streamDirect(reader io.Reader, writer io.Writer, flusher 
 	}
 }
 
-// streamOpenAIToClaude 将 OpenAI 流式响应转换为 Claude 流式响应
-// 用于 /api/anthropic 路径，当目标是 OpenAI 格式 API 时
+// streamOpenAIToClaude �?OpenAI 流式响应转换�?Claude 流式响应
+// 用于 /api/anthropic 路径，当目标�?OpenAI 格式 API �?
 func (s *ProxyService) streamOpenAIToClaude(reader io.Reader, writer io.Writer, flusher http.Flusher, model string, routeID int64) error {
-	// 发送 Claude 流式响应的开始事件
+	// 发�?Claude 流式响应的开始事�?
 	messageID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 
 	// message_start 事件
@@ -1152,7 +1203,7 @@ func (s *ProxyService) streamOpenAIToClaude(reader io.Reader, writer io.Writer, 
 				if choice, ok := choices[0].(map[string]interface{}); ok {
 					if delta, ok := choice["delta"].(map[string]interface{}); ok {
 						if content, ok := delta["content"].(string); ok && content != "" {
-							// 发送 content_block_delta 事件
+							// 发�?content_block_delta 事件
 							deltaEvent := map[string]interface{}{
 								"type":  "content_block_delta",
 								"index": 0,
@@ -1167,7 +1218,7 @@ func (s *ProxyService) streamOpenAIToClaude(reader io.Reader, writer io.Writer, 
 						}
 					}
 
-					// 检查是否结束
+					// 检查是否结�?
 					if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
 						// 不在这里处理结束，等循环结束后统一处理
 					}
@@ -1217,10 +1268,10 @@ func (s *ProxyService) streamOpenAIToClaude(reader io.Reader, writer io.Writer, 
 
 // FetchRemoteModels 获取远程模型列表
 func (s *ProxyService) FetchRemoteModels(apiUrl, apiKey string) ([]string, error) {
-	// 记录原始 URL 是否以 "/" 结尾
+	// 记录原始 URL 是否�?"/" 结尾
 	hasTrailingSlash := strings.HasSuffix(apiUrl, "/")
 
-	// 移除末尾的斜杠
+	// 移除末尾的斜�?
 	apiUrl = strings.TrimSuffix(apiUrl, "/")
 
 	// 添加 http/https 前缀（如果没有）
@@ -1228,7 +1279,7 @@ func (s *ProxyService) FetchRemoteModels(apiUrl, apiKey string) ([]string, error
 		apiUrl = "https://" + apiUrl
 	}
 
-	// 构建 URL：如果原始 URL 末尾有 "/"，说明用户已指定完整路径，只加 /models
+	// 构建 URL：如果原�?URL 末尾�?"/"，说明用户已指定完整路径，只�?/models
 	// 否则加上 /v1/models
 	var url string
 	if hasTrailingSlash {
@@ -1253,7 +1304,7 @@ func (s *ProxyService) FetchRemoteModels(apiUrl, apiKey string) ([]string, error
 	}
 	defer resp.Body.Close()
 
-	// 读取响应体
+	// 读取响应�?
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %v", err)
@@ -1282,25 +1333,25 @@ func (s *ProxyService) FetchRemoteModels(apiUrl, apiKey string) ([]string, error
 	return models, nil
 }
 
-// detectAdapter 智能检测需要使用的适配器
+// detectAdapter 智能检测需要使用的适配�?
 // 参数: route - 路由配置, requestFormat - 请求格式 (openai/claude/gemini)
 // 基于路由的format字段和requestFormat进行智能判断
-// 相同格式直接透传,不同格式才使用适配器
+// 相同格式直接透传,不同格式才使用适配�?
 func (s *ProxyService) detectAdapter(apiUrl, model string) string {
-	// 保持向后兼容:如果是旧的URL检测逻辑,使用启发式检测
+	// 保持向后兼容:如果是旧的URL检测逻辑,使用启发式检�?
 	return s.detectAdapterByURL(apiUrl, model)
 }
 
-// detectAdapterForRoute 根据路由配置和请求格式智能检测适配器
+// detectAdapterForRoute 根据路由配置和请求格式智能检测适配�?
 // requestFormat: "openai", "claude", "gemini"
-// route.Format: 目标API的格式
-// 返回: 适配器名称,空字符串表示直接透传
+// route.Format: 目标API的格�?
+// 返回: 适配器名�?空字符串表示直接透传
 func (s *ProxyService) detectAdapterForRoute(route *database.ModelRoute, requestFormat string) string {
 	if route == nil {
 		return ""
 	}
 
-	// 标准化请求格式
+	// 标准化请求格�?
 	requestFormat = normalizeFormat(requestFormat)
 
 	// 获取目标格式(路由配置的format)
@@ -1318,11 +1369,11 @@ func (s *ProxyService) detectAdapterForRoute(route *database.ModelRoute, request
 		return ""
 	}
 
-	// 不同格式需要转换
+	// 不同格式需要转�?
 	return getAdapterName(requestFormat, targetFormat)
 }
 
-// normalizeFormat 标准化格式名称
+// normalizeFormat 标准化格式名�?
 func normalizeFormat(format string) string {
 	format = strings.ToLower(strings.TrimSpace(format))
 	switch format {
@@ -1337,7 +1388,7 @@ func normalizeFormat(format string) string {
 	}
 }
 
-// inferFormatFromRoute 从路由信息推断格式
+// inferFormatFromRoute 从路由信息推断格�?
 func inferFormatFromRoute(apiUrl, model string) string {
 	lowerURL := strings.ToLower(apiUrl)
 	lowerModel := strings.ToLower(model)
@@ -1350,7 +1401,7 @@ func inferFormatFromRoute(apiUrl, model string) string {
 		return "gemini"
 	}
 
-	// 基于模型名判断
+	// 基于模型名判�?
 	if strings.HasPrefix(lowerModel, "claude-") {
 		return "claude"
 	}
@@ -1358,11 +1409,11 @@ func inferFormatFromRoute(apiUrl, model string) string {
 		return "gemini"
 	}
 
-	// 默认为 OpenAI 格式
+	// 默认�?OpenAI 格式
 	return "openai"
 }
 
-// getAdapterName 根据源格式和目标格式返回适配器名称
+// getAdapterName 根据源格式和目标格式返回适配器名�?
 func getAdapterName(requestFormat, targetFormat string) string {
 	key := requestFormat + "->" + targetFormat
 	switch key {
@@ -1384,7 +1435,7 @@ func getAdapterName(requestFormat, targetFormat string) string {
 	}
 }
 
-// getReverseAdapterName 获取反向适配器名称（用于响应转换）
+// getReverseAdapterName 获取反向适配器名称（用于响应转换�?
 // 例如：请求用 openai-to-claude，响应应该用 claude-to-openai
 func getReverseAdapterName(adapterName string) string {
 	switch adapterName {
@@ -1401,10 +1452,10 @@ func getReverseAdapterName(adapterName string) string {
 	case "gemini-to-claude":
 		return "claude-to-gemini"
 	case "anthropic":
-		// 旧的 anthropic 适配器名称，映射到 claude-to-openai
+		// 旧的 anthropic 适配器名称，映射�?claude-to-openai
 		return "claude-to-openai"
 	case "gemini":
-		// 旧的 gemini 适配器名称，映射到 gemini-to-openai
+		// 旧的 gemini 适配器名称，映射�?gemini-to-openai
 		return "gemini-to-openai"
 	default:
 		log.Warnf("[Adapter] No reverse adapter for: %s", adapterName)
@@ -1417,19 +1468,19 @@ func (s *ProxyService) detectAdapterByURL(apiUrl, model string) string {
 	lowerURL := strings.ToLower(apiUrl)
 	lowerModel := strings.ToLower(model)
 
-	// 先检查是否是标准的 OpenAI 格式 API 端点，如果是，则不应用任何适配器
-	// 这样可以避免将 Gemini 适配器错误地应用到 OpenAI 兼容的 API 上
+	// 先检查是否是标准�?OpenAI 格式 API 端点，如果是，则不应用任何适配�?
+	// 这样可以避免�?Gemini 适配器错误地应用�?OpenAI 兼容�?API �?
 	if isStandardOpenAIEndpoint(lowerURL) {
-		return "" // 对标准 OpenAI 端点不使用适配器
+		return "" // 对标�?OpenAI 端点不使用适配�?
 	}
 
-	// 精确内容检测 - 基于API URL和模型名称中的关键词
-	// 使用更精确的匹配避免误匹配，例如避免 "glm" 与 "gemini" 的混淆
+	// 精确内容检�?- 基于API URL和模型名称中的关键词
+	// 使用更精确的匹配避免误匹配，例如避免 "glm" �?"gemini" 的混�?
 	if containsExactWord(lowerURL, "anthropic") || containsExactWord(lowerModel, "claude") {
 		return "anthropic"
 	}
 
-	// 使用更严格的匹配来检测 Gemini，避免 "glm" 与 "gemini" 等误匹配
+	// 使用更严格的匹配来检�?Gemini，避�?"glm" �?"gemini" 等误匹配
 	if containsExactWord(lowerURL, "gemini") || containsExactWord(lowerModel, "gemini") {
 		return "gemini"
 	}
@@ -1438,16 +1489,16 @@ func (s *ProxyService) detectAdapterByURL(apiUrl, model string) string {
 		return "deepseek"
 	}
 
-	return "" // 不需要适配器
+	return "" // 不需要适配�?
 }
 
-// buildAdapterURL 构建适配器 URL
+// buildAdapterURL 构建适配�?URL
 func (s *ProxyService) buildAdapterURL(apiURL, adapterName, model string) string {
 	switch adapterName {
 	case "anthropic", "openai-to-claude":
 		return buildClaudeMessagesURL(apiURL)
 	case "gemini", "openai-to-gemini":
-		// Gemini 使用不同的 URL 格式
+		// Gemini 使用不同�?URL 格式
 		if strings.HasSuffix(apiURL, "/") {
 			// 末尾有斜杠，去掉/v1（如果存在）然后添加models路径
 			if strings.Contains(apiURL, "/v1/") {
@@ -1455,11 +1506,11 @@ func (s *ProxyService) buildAdapterURL(apiURL, adapterName, model string) string
 				baseUrl := strings.Replace(apiURL, "/v1/", "/", 1)
 				return fmt.Sprintf("%smodels/%s:generateContent", baseUrl, model)
 			} else if strings.HasSuffix(apiURL, "/v1") {
-				// 去掉末尾的/v1
+				// 去掉末尾�?v1
 				baseUrl := strings.TrimSuffix(apiURL, "/v1")
 				return fmt.Sprintf("%s/models/%s:generateContent", baseUrl, model)
 			}
-			// 末尾有斜杠但没有/v1，直接使用当前路径
+			// 末尾有斜杠但没有/v1，直接使用当前路�?
 			return fmt.Sprintf("%smodels/%s:generateContent", apiURL, model)
 		}
 		return fmt.Sprintf("%s/v1/models/%s:generateContent", apiURL, model)
@@ -1470,13 +1521,13 @@ func (s *ProxyService) buildAdapterURL(apiURL, adapterName, model string) string
 	}
 }
 
-// buildAdapterStreamURL 构建适配器流式 URL
+// buildAdapterStreamURL 构建适配器流�?URL
 func (s *ProxyService) buildAdapterStreamURL(apiURL, adapterName, model string) string {
 	switch adapterName {
 	case "anthropic", "openai-to-claude":
 		return buildClaudeMessagesURL(apiURL)
 	case "gemini", "openai-to-gemini":
-		// Gemini 使用不同的 URL 格式
+		// Gemini 使用不同�?URL 格式
 		if strings.HasSuffix(apiURL, "/") {
 			// 末尾有斜杠，去掉/v1（如果存在）然后添加models路径
 			if strings.Contains(apiURL, "/v1/") {
@@ -1484,11 +1535,11 @@ func (s *ProxyService) buildAdapterStreamURL(apiURL, adapterName, model string) 
 				baseUrl := strings.Replace(apiURL, "/v1/", "/", 1)
 				return fmt.Sprintf("%smodels/%s:streamGenerateContent", baseUrl, model)
 			} else if strings.HasSuffix(apiURL, "/v1") {
-				// 去掉末尾的/v1
+				// 去掉末尾�?v1
 				baseUrl := strings.TrimSuffix(apiURL, "/v1")
 				return fmt.Sprintf("%s/models/%s:streamGenerateContent", baseUrl, model)
 			}
-			// 末尾有斜杠但没有/v1，直接使用当前路径
+			// 末尾有斜杠但没有/v1，直接使用当前路�?
 			return fmt.Sprintf("%smodels/%s:streamGenerateContent", apiURL, model)
 		}
 		return fmt.Sprintf("%s/v1/models/%s:streamGenerateContent", apiURL, model)
@@ -1499,8 +1550,8 @@ func (s *ProxyService) buildAdapterStreamURL(apiURL, adapterName, model string) 
 	}
 }
 
-// isStandardOpenAIEndpoint 检查 URL 是否为标准的 OpenAI API 端点
-// 如果是，则不应该应用任何适配器转换
+// isStandardOpenAIEndpoint 检�?URL 是否为标准的 OpenAI API 端点
+// 如果是，则不应该应用任何适配器转�?
 func isStandardOpenAIEndpoint(url string) bool {
 	// 检查是否包含标准的 OpenAI API 路径
 	if containsExactWord(url, "/v1/chat/completions") ||
@@ -1516,8 +1567,8 @@ func isStandardOpenAIEndpoint(url string) bool {
 	if containsExactWord(url, "openai.com") ||
 		containsExactWord(url, "api.openai.com") ||
 		containsExactWord(url, "/openai/v1") ||
-		containsExactWord(url, "/v1") { // 这太宽泛了，需要更具体的检查
-		// 对于 /v1 路径，需要更具体的检查，仅在确实包含 chat/completions 时才认为是 OpenAI API
+		containsExactWord(url, "/v1") { // 这太宽泛了，需要更具体的检�?
+		// 对于 /v1 路径，需要更具体的检查，仅在确实包含 chat/completions 时才认为�?OpenAI API
 		if strings.Contains(url, "/v1/chat/completions") ||
 			strings.Contains(url, "/v1/completions") {
 			return true
@@ -1527,14 +1578,14 @@ func isStandardOpenAIEndpoint(url string) bool {
 	return false
 }
 
-// containsExactWord 检查 needle 是否作为一个独立的单词存在于 haystack 中
+// containsExactWord 检�?needle 是否作为一个独立的单词存在�?haystack �?
 // 通过检查边界字符来确保精确匹配，避免子串误匹配
 func containsExactWord(haystack, needle string) bool {
 	if haystack == needle {
 		return true
 	}
 
-	// 使用更精确的查找方法，确保 needle 前后是边界或分隔符
+	// 使用更精确的查找方法，确�?needle 前后是边界或分隔�?
 	for i := 0; i <= len(haystack)-len(needle); i++ {
 		if haystack[i:i+len(needle)] == needle {
 			// 检查前面的字符（如果存在）是否为非字母数字字符
@@ -1551,23 +1602,23 @@ func containsExactWord(haystack, needle string) bool {
 	return false
 }
 
-// isAlphanumeric 检查字符是否为字母或数字
+// isAlphanumeric 检查字符是否为字母或数�?
 func isAlphanumeric(c rune) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // buildOpenAIChatURL 智能构建 OpenAI chat completions URL
-// 如果 apiUrl 末尾有 /，则不添加 /v1 前缀（用于兼容如智谱等非标准路径的 API）
-// 例如：
+// 如果 apiUrl 末尾�?/，则不添�?/v1 前缀（用于兼容如智谱等非标准路径�?API�?
+// 例如�?
 //   - https://api.openai.com/v1 -> https://api.openai.com/v1/chat/completions
 //   - https://open.bigmodel.cn/api/coding/paas/v4/ -> https://open.bigmodel.cn/api/coding/paas/v4/chat/completions
 //   - https://api.kkyyxx.xyz -> https://api.kkyyxx.xyz/v1/chat/completions
 func buildOpenAIChatURL(apiUrl string) string {
 	if strings.HasSuffix(apiUrl, "/") {
-		// 末尾有斜杠，说明是固定API路径，直接添加 chat/completions
+		// 末尾有斜杠，说明是固定API路径，直接添�?chat/completions
 		return apiUrl + "chat/completions"
 	}
-	// 末尾没有斜杠，是标准API，需要添加 /v1/chat/completions
+	// 末尾没有斜杠，是标准API，需要添�?/v1/chat/completions
 	return apiUrl + "/v1/chat/completions"
 }
 
@@ -1580,17 +1631,17 @@ func buildClaudeMessagesURL(apiUrl string) string {
 			baseUrl := strings.Replace(apiUrl, "/v1/", "/", 1)
 			return baseUrl + "messages"
 		} else if strings.HasSuffix(apiUrl, "/v1") {
-			// 去掉末尾的/v1
+			// 去掉末尾�?v1
 			baseUrl := strings.TrimSuffix(apiUrl, "/v1")
 			return baseUrl + "/messages"
 		}
-		// 末尾有斜杠但没有/v1，直接使用当前路径 + messages
+		// 末尾有斜杠但没有/v1，直接使用当前路�?+ messages
 		return apiUrl + "messages"
 	}
 	return apiUrl + "/v1/messages"
 }
 
-// convertOpenAIToAnthropicResponse 将 OpenAI 格式响应转换为 Anthropic 格式
+// convertOpenAIToAnthropicResponse �?OpenAI 格式响应转换�?Anthropic 格式
 func (s *ProxyService) convertOpenAIToAnthropicResponse(openaiResp map[string]interface{}) map[string]interface{} {
 	// OpenAI 响应格式示例:
 	// {
@@ -1649,12 +1700,12 @@ func (s *ProxyService) convertOpenAIToAnthropicResponse(openaiResp map[string]in
 	// 设置角色
 	anthropicResp["role"] = "assistant"
 
-	// 复制模型名
+	// 复制模型�?
 	if model, ok := openaiResp["model"].(string); ok {
 		anthropicResp["model"] = model
 	}
 
-	// 转换 content - 从 choices[0].message.content 到 content[{type, text}]
+	// 转换 content - �?choices[0].message.content �?content[{type, text}]
 	if choices, ok := openaiResp["choices"].([]interface{}); ok && len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]interface{}); ok {
 			if message, ok := choice["message"].(map[string]interface{}); ok {
@@ -1668,7 +1719,7 @@ func (s *ProxyService) convertOpenAIToAnthropicResponse(openaiResp map[string]in
 				}
 			}
 
-			// 转换 finish_reason 到 stop_reason
+			// 转换 finish_reason �?stop_reason
 			if finishReason, ok := choice["finish_reason"].(string); ok {
 				switch finishReason {
 				case "stop":
@@ -1682,7 +1733,7 @@ func (s *ProxyService) convertOpenAIToAnthropicResponse(openaiResp map[string]in
 		}
 	}
 
-	// 转换 usage - 从 {prompt_tokens, completion_tokens, total_tokens} 到 {input_tokens, output_tokens}
+	// 转换 usage - �?{prompt_tokens, completion_tokens, total_tokens} �?{input_tokens, output_tokens}
 	if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
 		anthropicUsage := make(map[string]interface{})
 		if promptTokens, ok := usage["prompt_tokens"].(float64); ok {
@@ -1698,7 +1749,7 @@ func (s *ProxyService) convertOpenAIToAnthropicResponse(openaiResp map[string]in
 	return anthropicResp
 }
 
-// convertClaudeToOpenAIResponse 将 Claude 格式响应转换为 OpenAI 格式
+// convertClaudeToOpenAIResponse �?Claude 格式响应转换�?OpenAI 格式
 func (s *ProxyService) convertClaudeToOpenAIResponse(claudeResp map[string]interface{}) map[string]interface{} {
 	openaiResp := make(map[string]interface{})
 
@@ -1775,11 +1826,11 @@ func (s *ProxyService) convertClaudeToOpenAIResponse(claudeResp map[string]inter
 	return openaiResp
 }
 
-// convertOpenAIToGeminiResponse 将 OpenAI 格式响应转换为 Gemini 格式
+// convertOpenAIToGeminiResponse �?OpenAI 格式响应转换�?Gemini 格式
 func (s *ProxyService) convertOpenAIToGeminiResponse(openaiResp map[string]interface{}) map[string]interface{} {
 	geminiResp := make(map[string]interface{})
 
-	// 转换 choices 到 candidates
+	// 转换 choices �?candidates
 	var text string
 	var finishReason string
 
@@ -1841,13 +1892,13 @@ func (s *ProxyService) convertOpenAIToGeminiResponse(openaiResp map[string]inter
 	return geminiResp
 }
 
-// extractTokensFromStreamResponse 从流式响应中提取token使用信息（支持 OpenAI 和 Claude 格式）
+// extractTokensFromStreamResponse 从流式响应中提取token使用信息（支�?OpenAI �?Claude 格式�?
 func (s *ProxyService) extractTokensFromStreamResponse(response string) (promptTokens, completionTokens int) {
-	// 将响应按行分割
+	// 将响应按行分�?
 	lines := strings.Split(response, "\n")
 
 	for _, line := range lines {
-		// 处理SSE格式: "data: {...}" 或 "data:{...}"
+		// 处理SSE格式: "data: {...}" �?"data:{...}"
 		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimPrefix(line, "data:")
 			data = strings.TrimSpace(data)
@@ -1869,7 +1920,7 @@ func (s *ProxyService) extractTokensFromStreamResponse(response string) (promptT
 					promptTokens = int(pt)
 				}
 				if ct, ok := usage["completion_tokens"].(float64); ok {
-					completionTokens = int(ct) // 使用最后一个值
+					completionTokens = int(ct) // 使用最后一个�?
 				}
 			}
 
@@ -1913,20 +1964,25 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (model == s.config.RedirectKeyword || strings.HasPrefix(model, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return nil, http.StatusBadRequest, fmt.Errorf("redirect target model not configured")
-		}
-		log.Infof("Redirecting %s to model: %s", model, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
-		reqData["model"] = model
-	}
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (model == s.config.RedirectKeyword || strings.HasPrefix(model, s.config.RedirectKeyword+":"))
 
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		availableModels, _ := s.routeService.GetAvailableModels()
-		return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("redirect target not configured or not found: %v", err)
+		}
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", model, route.Name, route.Model, route.ID)
+		model = route.Model
+		reqData["model"] = model
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			availableModels, _ := s.routeService.GetAvailableModels()
+			return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+		}
 	}
 
 	// 清理路由 API URL
@@ -1953,7 +2009,7 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 		needConvertResponse = "none"
 		log.Infof("Forwarding Gemini request directly to: %s", targetURL)
 	} else if targetFormat == "openai" {
-		// 目标是 OpenAI 格式，需要将 Gemini 请求转换为 OpenAI 格式
+		// 目标�?OpenAI 格式，需要将 Gemini 请求转换�?OpenAI 格式
 		adapter := adapters.GetAdapter("gemini-to-openai")
 		if adapter == nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("gemini-to-openai adapter not found")
@@ -1968,7 +2024,7 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 		needConvertResponse = "openai"
 		log.Infof("Converting Gemini -> OpenAI, target: %s", targetURL)
 	} else if targetFormat == "claude" {
-		// 目标是 Claude 格式，需要 Gemini -> OpenAI -> Claude 两步转换
+		// 目标�?Claude 格式，需�?Gemini -> OpenAI -> Claude 两步转换
 		// 第一步：Gemini -> OpenAI
 		geminiToOpenAI := adapters.GetAdapter("gemini-to-openai")
 		if geminiToOpenAI == nil {
@@ -2005,7 +2061,7 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// 根据目标格式设置请求头
+	// 根据目标格式设置请求�?
 	proxyReq.Header.Set("Content-Type", "application/json")
 
 	if route.APIKey != "" {
@@ -2023,7 +2079,7 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 		}
 	}
 
-	// 发送请求
+	// 发送请�?
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("backend service unavailable: %v", err)
@@ -2035,24 +2091,24 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// 根据需要转换响应
+	// 根据需要转换响�?
 	if resp.StatusCode == http.StatusOK && needConvertResponse != "none" {
 		var respData map[string]interface{}
 		if err := json.Unmarshal(responseBody, &respData); err == nil {
 			switch needConvertResponse {
 			case "openai":
-				// OpenAI → Gemini
+				// OpenAI �?Gemini
 				log.Infof("[Gemini Request] Converting OpenAI response to Gemini format")
 				geminiResp := s.convertOpenAIToGeminiResponse(respData)
 				if convertedBody, err := json.Marshal(geminiResp); err == nil {
 					return convertedBody, resp.StatusCode, nil
 				}
 			case "claude":
-				// Claude → OpenAI → Gemini
+				// Claude �?OpenAI �?Gemini
 				log.Infof("[Gemini Request] Converting Claude response to Gemini format")
-				// 先将 Claude 转换为 OpenAI
+				// 先将 Claude 转换�?OpenAI
 				openaiResp := s.convertClaudeToOpenAIResponse(respData)
-				// 再将 OpenAI 转换为 Gemini
+				// 再将 OpenAI 转换�?Gemini
 				geminiResp := s.convertOpenAIToGeminiResponse(openaiResp)
 				if convertedBody, err := json.Marshal(geminiResp); err == nil {
 					return convertedBody, resp.StatusCode, nil
@@ -2079,21 +2135,26 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (model == s.config.RedirectKeyword || strings.HasPrefix(model, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (model == s.config.RedirectKeyword || strings.HasPrefix(model, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", model, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", model, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 		requestBody, _ = json.Marshal(reqData)
-	}
-
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		availableModels, _ := s.routeService.GetAvailableModels()
-		return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			availableModels, _ := s.routeService.GetAvailableModels()
+			return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+		}
 	}
 
 	// 清理路由 API URL
@@ -2120,7 +2181,7 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 		responseConversionType = "none"
 		log.Infof("Streaming Gemini request directly to: %s", targetURL)
 	} else if targetFormat == "openai" {
-		// 目标是 OpenAI 格式，需要将 Gemini 请求转换为 OpenAI 格式
+		// 目标�?OpenAI 格式，需要将 Gemini 请求转换�?OpenAI 格式
 		adapter := adapters.GetAdapter("gemini-to-openai")
 		if adapter == nil {
 			return fmt.Errorf("gemini-to-openai adapter not found")
@@ -2136,7 +2197,7 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 		responseConversionType = "openai-to-gemini"
 		log.Infof("Converting Gemini -> OpenAI, target: %s", targetURL)
 	} else if targetFormat == "claude" {
-		// 目标是 Claude 格式，需要 Gemini -> OpenAI -> Claude 两步转换
+		// 目标�?Claude 格式，需�?Gemini -> OpenAI -> Claude 两步转换
 		// 第一步：Gemini -> OpenAI
 		geminiToOpenAI := adapters.GetAdapter("gemini-to-openai")
 		if geminiToOpenAI == nil {
@@ -2174,7 +2235,7 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 		return err
 	}
 
-	// 根据目标格式设置请求头
+	// 根据目标格式设置请求�?
 	proxyReq.Header.Set("Content-Type", "application/json")
 	proxyReq.Header.Set("Accept", "text/event-stream")
 
@@ -2193,14 +2254,14 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 		}
 	}
 
-	// 发送请求
+	// 发送请�?
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		return fmt.Errorf("backend service unavailable: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// 检查响应状态
+	// 检查响应状�?
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("backend error: %d - %s", resp.StatusCode, string(body))
@@ -2209,11 +2270,11 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 	// 根据响应转换类型来处理流
 	switch responseConversionType {
 	case "openai-to-gemini":
-		// 将 OpenAI 流式响应转换为 Gemini 流式响应
+		// �?OpenAI 流式响应转换�?Gemini 流式响应
 		log.Infof("[Gemini Stream] Converting OpenAI stream response to Gemini format")
 		return s.streamOpenAIToGemini(resp.Body, writer, flusher, model, route.ID)
 	case "claude-to-gemini":
-		// 将 Claude 流式响应转换为 Gemini 流式响应
+		// �?Claude 流式响应转换�?Gemini 流式响应
 		log.Infof("[Gemini Stream] Converting Claude stream response to Gemini format")
 		return s.streamClaudeToGemini(resp.Body, writer, flusher, model, route.ID)
 	default:
@@ -2234,7 +2295,7 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 	}
 }
 
-// streamOpenAIToGemini 将 OpenAI 流式响应转换为 Gemini 流式响应
+// streamOpenAIToGemini �?OpenAI 流式响应转换�?Gemini 流式响应
 func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, flusher http.Flusher, model string, routeID int64) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
@@ -2277,7 +2338,7 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 				if choice, ok := choices[0].(map[string]interface{}); ok {
 					if delta, ok := choice["delta"].(map[string]interface{}); ok {
 						if content, ok := delta["content"].(string); ok && content != "" {
-							// 构建 Gemini 格式的流式响应
+							// 构建 Gemini 格式的流式响�?
 							geminiChunk := map[string]interface{}{
 								"candidates": []interface{}{
 									map[string]interface{}{
@@ -2299,9 +2360,9 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 						}
 					}
 
-					// 检查是否结束
+					// 检查是否结�?
 					if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-						// 发送带有 finishReason 的最终块
+						// 发送带�?finishReason 的最终块
 						geminiChunk := map[string]interface{}{
 							"candidates": []interface{}{
 								map[string]interface{}{
@@ -2335,7 +2396,7 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 	return nil
 }
 
-// streamClaudeToGemini 将 Claude 流式响应转换为 Gemini 流式响应
+// streamClaudeToGemini �?Claude 流式响应转换�?Gemini 流式响应
 func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, flusher http.Flusher, model string, routeID int64) error {
 	log.Infof("[Claude->Gemini Stream] Starting conversion for model: %s", model)
 	scanner := bufio.NewScanner(reader)
@@ -2355,10 +2416,10 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 
 		log.Infof("[Claude->Gemini Stream] Processing line: %s", line)
 
-		// Claude SSE 格式: "data: {...}" 或 "data:{...}"
+		// Claude SSE 格式: "data: {...}" �?"data:{...}"
 		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimPrefix(line, "data:")
-			data = strings.TrimSpace(data) // 去掉可能的空格
+			data = strings.TrimSpace(data) // 去掉可能的空�?
 
 			var event map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -2388,7 +2449,7 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 							chunkCount++
 							log.Infof("[Claude->Gemini Stream] Converting text chunk #%d: %s", chunkCount, text)
 
-							// 构建 Gemini 格式的流式响应
+							// 构建 Gemini 格式的流式响�?
 							geminiChunk := map[string]interface{}{
 								"candidates": []interface{}{
 									map[string]interface{}{
@@ -2421,7 +2482,7 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 				}
 
 			case "message_stop":
-				// 发送带有 finishReason 的最终块
+				// 发送带�?finishReason 的最终块
 				geminiChunk := map[string]interface{}{
 					"candidates": []interface{}{
 						map[string]interface{}{
@@ -2480,27 +2541,32 @@ func (s *ProxyService) ProxyClaudeCodeRequest(requestBody []byte, headers map[st
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return nil, http.StatusNotFound, fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return nil, http.StatusNotFound, fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 		requestBody, _ = json.Marshal(reqData)
-	}
-
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		availableModels, _ := s.routeService.GetAvailableModels()
-		return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			availableModels, _ := s.routeService.GetAvailableModels()
+			return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+		}
 	}
 
 	// 清理路由 API URL
 	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
 
-	// 智能检测目标路由格式
+	// 智能检测目标路由格�?
 	targetFormat := normalizeFormat(route.Format)
 	if targetFormat == "" {
 		targetFormat = inferFormatFromRoute(route.APIUrl, route.Model)
@@ -2513,13 +2579,13 @@ func (s *ProxyService) ProxyClaudeCodeRequest(requestBody []byte, headers map[st
 	var needConvertResponse bool
 
 	if targetFormat == "claude" || targetFormat == "anthropic" {
-		// 目标是 Claude 格式，直接透传请求
+		// 目标�?Claude 格式，直接透传请求
 		log.Infof("[Claude Code] Target is Claude format, passing through directly")
 		transformedBody = requestBody
 		targetURL = buildClaudeMessagesURL(cleanAPIUrl)
 		needConvertResponse = false
 	} else {
-		// 目标是 OpenAI 格式，需要转换
+		// 目标�?OpenAI 格式，需要转�?
 		log.Infof("[Claude Code] Target is OpenAI format, converting request")
 		adapter := adapters.GetAdapter("claudecode-to-openai")
 		if adapter == nil {
@@ -2544,7 +2610,7 @@ func (s *ProxyService) ProxyClaudeCodeRequest(requestBody []byte, headers map[st
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// 设置请求头
+	// 设置请求�?
 	proxyReq.Header.Set("Content-Type", "application/json")
 	if targetFormat == "claude" || targetFormat == "anthropic" {
 		// Claude 格式使用 x-api-key
@@ -2561,7 +2627,7 @@ func (s *ProxyService) ProxyClaudeCodeRequest(requestBody []byte, headers map[st
 		}
 	}
 
-	// 发送请求
+	// 发送请�?
 	startTime := time.Now()
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
@@ -2578,7 +2644,7 @@ func (s *ProxyService) ProxyClaudeCodeRequest(requestBody []byte, headers map[st
 
 	log.Infof("[Claude Code] Response received from %s in %v, status: %d", route.Name, time.Since(startTime), resp.StatusCode)
 
-	// 记录使用情况并处理响应
+	// 记录使用情况并处理响�?
 	if resp.StatusCode == http.StatusOK {
 		var respData map[string]interface{}
 		if err := json.Unmarshal(responseBody, &respData); err == nil {
@@ -2601,7 +2667,7 @@ func (s *ProxyService) ProxyClaudeCodeRequest(requestBody []byte, headers map[st
 					s.routeService.LogRequest(model, route.ID, promptTokens, completionTokens, totalTokens, true, "")
 				}
 
-				// 将 OpenAI 响应转换为 Claude 格式
+				// �?OpenAI 响应转换�?Claude 格式
 				log.Infof("[Claude Code] Converting OpenAI response to Claude format")
 				adapter := adapters.GetAdapter("claudecode-to-openai")
 				if adapter != nil {
@@ -2663,30 +2729,35 @@ func (s *ProxyService) ProxyClaudeCodeStreamRequest(requestBody []byte, headers 
 	}
 
 	// 首先检查是否是重定向关键字
-	if s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":")) {
-		if s.config.RedirectTargetModel == "" {
-			return fmt.Errorf("redirect target model not configured")
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return fmt.Errorf("redirect target not configured or not found: %v", err)
 		}
-		log.Infof("Redirecting %s to model: %s", realModel, s.config.RedirectTargetModel)
-		model = s.config.RedirectTargetModel
+		log.Infof("Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
 		reqData["model"] = model
 		requestBody, _ = json.Marshal(reqData)
-	}
-
-	// 查找路由
-	route, err := s.routeService.GetRouteByModel(model)
-	if err != nil {
-		if strings.Contains(err.Error(), "model not found") {
-			availableModels, _ := s.routeService.GetAvailableModels()
-			return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+	} else {
+		// 查找路由
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			if strings.Contains(err.Error(), "model not found") {
+				availableModels, _ := s.routeService.GetAvailableModels()
+				return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+			}
+			return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 		}
-		return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
 	}
 
 	// 清理路由 API URL
 	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
 
-	// 智能检测目标路由格式
+	// 智能检测目标路由格�?
 	targetFormat := normalizeFormat(route.Format)
 	if targetFormat == "" {
 		targetFormat = inferFormatFromRoute(route.APIUrl, route.Model)
@@ -2698,18 +2769,18 @@ func (s *ProxyService) ProxyClaudeCodeStreamRequest(requestBody []byte, headers 
 	var targetURL string
 	var needConvertResponse bool
 
-	// 确保开启 stream
+	// 确保开�?stream
 	reqData["stream"] = true
 
 	if targetFormat == "claude" || targetFormat == "anthropic" {
-		// 目标是 Claude 格式，直接透传请求
+		// 目标�?Claude 格式，直接透传请求
 		log.Infof("[Claude Code Stream] Target is Claude format, passing through directly")
 		requestBody, _ = json.Marshal(reqData)
 		transformedBody = requestBody
 		targetURL = buildClaudeMessagesURL(cleanAPIUrl)
 		needConvertResponse = false
 	} else {
-		// 目标是 OpenAI 格式，需要转换
+		// 目标�?OpenAI 格式，需要转�?
 		log.Infof("[Claude Code Stream] Target is OpenAI format, converting request")
 		adapter := adapters.GetAdapter("claudecode-to-openai")
 		if adapter == nil {
@@ -2750,7 +2821,7 @@ func (s *ProxyService) ProxyClaudeCodeStreamRequest(requestBody []byte, headers 
 		}
 	}
 
-	// 发送请求
+	// 发送请�?
 	resp, err := s.httpClient.Do(proxyReq)
 	if err != nil {
 		return err
@@ -2762,9 +2833,9 @@ func (s *ProxyService) ProxyClaudeCodeStreamRequest(requestBody []byte, headers 
 		return fmt.Errorf("backend error: %d - %s", resp.StatusCode, string(body))
 	}
 
-	// 使用实际路由到的模型名用于统计
+	// 使用实际路由到的模型名用于统�?
 	if needConvertResponse {
-		// 将 OpenAI 流式响应转换为 Claude 流式响应
+		// �?OpenAI 流式响应转换�?Claude 流式响应
 		log.Infof("[Claude Code Stream] Converting OpenAI stream response to Claude format")
 		return s.streamOpenAIToClaudeCode(resp.Body, writer, flusher, model, route.ID)
 	} else {
@@ -2774,10 +2845,10 @@ func (s *ProxyService) ProxyClaudeCodeStreamRequest(requestBody []byte, headers 
 	}
 }
 
-// streamOpenAIToClaudeCode 将 OpenAI 流式响应转换为 Claude Code 流式响应
+// streamOpenAIToClaudeCode �?OpenAI 流式响应转换�?Claude Code 流式响应
 // 专门用于 /api/claudecode 路径，支持工具调用等高级功能
 func (s *ProxyService) streamOpenAIToClaudeCode(reader io.Reader, writer io.Writer, flusher http.Flusher, model string, routeID int64) error {
-	// 发送 Claude 流式响应的开始事件
+	// 发�?Claude 流式响应的开始事�?
 	messageID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
 
 	// message_start 事件
@@ -2862,7 +2933,7 @@ func (s *ProxyService) streamOpenAIToClaudeCode(reader io.Reader, writer io.Writ
 								contentBlockStarted = true
 							}
 
-							// 发送 content_block_delta 事件
+							// 发�?content_block_delta 事件
 							deltaEvent := map[string]interface{}{
 								"type":  "content_block_delta",
 								"index": contentIndex,
@@ -2916,7 +2987,7 @@ func (s *ProxyService) streamOpenAIToClaudeCode(reader io.Reader, writer io.Writ
 										if name, ok := function["name"].(string); ok && name != "" {
 											currentToolCalls[tcIndex]["name"] = name
 
-											// 发送 tool_use content_block_start
+											// 发�?tool_use content_block_start
 											toolBlockStart := map[string]interface{}{
 												"type":  "content_block_start",
 												"index": contentIndex + tcIndex,
@@ -2934,7 +3005,7 @@ func (s *ProxyService) streamOpenAIToClaudeCode(reader io.Reader, writer io.Writ
 										if args, ok := function["arguments"].(string); ok && args != "" {
 											currentToolCalls[tcIndex]["arguments"] = currentToolCalls[tcIndex]["arguments"].(string) + args
 
-											// 发送 input_json_delta
+											// 发�?input_json_delta
 											inputDelta := map[string]interface{}{
 												"type":  "content_block_delta",
 												"index": contentIndex + tcIndex,
@@ -2968,7 +3039,7 @@ func (s *ProxyService) streamOpenAIToClaudeCode(reader io.Reader, writer io.Writ
 		flusher.Flush()
 	}
 
-	// 关闭工具调用块
+	// 关闭工具调用�?
 	for i := range currentToolCalls {
 		toolBlockStop := map[string]interface{}{
 			"type":  "content_block_stop",
