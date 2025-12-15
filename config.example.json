@@ -1,6 +1,6 @@
 {
   "host": "localhost",
-  "port": 8000,
+  "port": 5642,
   "database_path": "routes.db",
   "local_api_key": "sk-local-default-key-change-me",
   "redirect_enabled": false,

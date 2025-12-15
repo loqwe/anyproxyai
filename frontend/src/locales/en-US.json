@@ -60,6 +60,7 @@
     "routeCount": "Total Routes",
     "modelCount": "Total Models",
     "totalRequests": "Total Requests",
+    "todayRequests": "Today's Requests",
     "todayTokens": "Today's Tokens",
     "redirectConfig": "Proxy Redirect Config",
     "enableRedirect": "Enable Redirect",
@@ -148,6 +149,9 @@
     "enableFileLogDesc": "When enabled, logs will be saved to log/ directory, organized by date",
     "fileLogEnabled": "File logging enabled",
     "fileLogDisabled": "File logging disabled",
+    "apiPort": "API Port",
+    "apiPortDesc": "Modify the API service port, requires restart to take effect",
+    "portUpdated": "Port updated, please restart the application",
     "themeSettings": "Theme Settings",
     "currentTheme": "Current Theme",
     "darkMode": "Dark Mode",
@@ -168,6 +172,12 @@
     "modelRanking": "Model usage ranking",
     "heatmapData": "Historical heatmap data"
   },
+  "restartDialog": {
+    "title": "Restart Required",
+    "confirm": "Restart Now",
+    "cancel": "Later",
+    "message": "Port settings have been changed. The application needs to restart for changes to take effect."
+  },
   "messages": {
     "switchedToDark": "Switched to dark mode",
     "switchedToLight": "Switched to light mode",
@@ -185,7 +195,8 @@
     "minimizeDisabled": "Minimize to tray disabled",
     "languageChanged": "Language changed",
     "redirectConfigSaved": "Redirect config saved",
-    "redirectConfigFailed": "Failed to save redirect config"
+    "redirectConfigFailed": "Failed to save redirect config",
+    "restartFailed": "Restart failed"
   },
   "common": {
     "loading": "Loading...",

@@ -150,25 +150,25 @@ Use the local proxy endpoint in your application:
 
 **OpenAI Compatible:**
 ```
-API Base URL: http://localhost:8080/api
+API Base URL: http://localhost:5642/api
 API Key: (use the key shown on home page, or any value if auth is disabled)
 ```
 
 **Claude/Anthropic:**
 ```
-API Base URL: http://localhost:8080/api/anthropic
+API Base URL: http://localhost:5642/api/anthropic
 API Key: (use the key shown on home page, or any value if auth is disabled)
 ```
 
 **Claude Code:**
 ```
-API Base URL: http://localhost:8080/api/claudecode
+API Base URL: http://localhost:5642/api/claudecode
 API Key: (use the key shown on home page, or any value if auth is disabled)
 ```
 
 **Gemini:**
 ```
-API Base URL: http://localhost:8080/api/gemini
+API Base URL: http://localhost:5642/api/gemini
 API Key: (use the key shown on home page, or any value if auth is disabled)
 ```
 
@@ -183,7 +183,7 @@ Enable redirect and set `proxy_auto` as your model name to automatically route t
 ```
 ┌─────────────────┐     ┌─────────────────────────────────────────────────────┐
 │  Your App       │────▶│                 AnyProxyAi                          │
-│  (Any SDK)      │     │  localhost:8080                                     │
+│  (Any SDK)      │     │  localhost:5642                                     │
 └─────────────────┘     │                                                     │
                         │  ┌─────────────────────────────────────────────┐   │
                         │  │              API Router                      │   │
@@ -237,7 +237,7 @@ Enable redirect and set `proxy_auto` as your model name to automatically route t
 ```json
 {
   "host": "localhost",
-  "port": 8080,
+  "port": 5642,
   "database_path": "routes.db",
   "local_api_key": "sk-local-default-key",
   "redirect_enabled": true,
@@ -268,31 +268,26 @@ Routes are stored in SQLite database (`routes.db`) with the following schema:
 
 - Go 1.22+
 - Node.js 18+
-- Wails CLI v2
 
 ### Development Mode
 
 ```bash
-# Install Wails CLI
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
 # Install frontend dependencies
 cd frontend && npm install && cd ..
 
-# Run in dev mode
-wails dev
+# Run directly with Go
+go run .
 ```
 
 ### Build
 
 ```bash
 # Build for current platform
-wails build
+go build -o anyproxyai .
 
-# Build for specific platform
-wails build -platform windows/amd64
-wails build -platform linux/amd64
-wails build -platform darwin/arm64
+# Or use the build script
+./build.sh        # Linux/macOS
+build.bat         # Windows
 ```
 
 ### Project Structure
@@ -386,8 +381,8 @@ A: Click "More info" → "Run anyway". The app is not code-signed.
 **Q: macOS shows "cannot be opened" error?**
 A: Right-click → Open → Open. Or allow in System Preferences → Security & Privacy.
 
-**Q: Port 8080 is already in use?**
-A: Edit `config.json` and change the `port` value.
+**Q: Port 5642 is already in use?**
+A: Edit `config.json` and change the `port` value, or change it in Settings page.
 
 ### Usage
 

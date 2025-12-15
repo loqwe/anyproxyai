@@ -2,6 +2,8 @@ package services
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 
 	"openai-router-go/internal/config"
 	"openai-router-go/internal/service"
@@ -38,15 +40,17 @@ type StatsInfo struct {
 
 // ConfigInfo 配置信息结构体
 type ConfigInfo struct {
-	LocalApiKey         string `json:"localApiKey"`
-	OpenaiEndpoint      string `json:"openaiEndpoint"`
-	RedirectEnabled     bool   `json:"redirectEnabled"`
-	RedirectKeyword     string `json:"redirectKeyword"`
-	RedirectTargetModel string `json:"redirectTargetModel"`
-	RedirectTargetName  string `json:"redirectTargetName"`
-	MinimizeToTray      bool   `json:"minimizeToTray"`
-	AutoStart           bool   `json:"autoStart"`
-	EnableFileLog       bool   `json:"enableFileLog"`
+	LocalApiKey           string `json:"localApiKey"`
+	OpenaiEndpoint        string `json:"openaiEndpoint"`
+	RedirectEnabled       bool   `json:"redirectEnabled"`
+	RedirectKeyword       string `json:"redirectKeyword"`
+	RedirectTargetModel   string `json:"redirectTargetModel"`
+	RedirectTargetName    string `json:"redirectTargetName"`
+	RedirectTargetRouteID int64  `json:"redirectTargetRouteId"`
+	MinimizeToTray        bool   `json:"minimizeToTray"`
+	AutoStart             bool   `json:"autoStart"`
+	EnableFileLog         bool   `json:"enableFileLog"`
+	Port                  int    `json:"port"`
 }
 
 // AppSettingsInfo 应用设置结构体
@@ -209,23 +213,32 @@ func (a *AppService) GetModelRanking(limit int) ([]map[string]interface{}, error
 // GetConfig 获取配置
 func (a *AppService) GetConfig() map[string]interface{} {
 	return map[string]interface{}{
-		"localApiKey":         a.Config.LocalAPIKey,
-		"openaiEndpoint":      fmt.Sprintf("http://%s:%d", a.Config.Host, a.Config.Port),
-		"redirectEnabled":     a.Config.RedirectEnabled,
-		"redirectKeyword":     a.Config.RedirectKeyword,
-		"redirectTargetModel": a.Config.RedirectTargetModel,
-		"redirectTargetName":  a.Config.RedirectTargetName,
-		"minimizeToTray":      a.Config.MinimizeToTray,
-		"autoStart":           a.Config.AutoStart,
-		"enableFileLog":       a.Config.EnableFileLog,
+		"localApiKey":           a.Config.LocalAPIKey,
+		"openaiEndpoint":        fmt.Sprintf("http://%s:%d", a.Config.Host, a.Config.Port),
+		"redirectEnabled":       a.Config.RedirectEnabled,
+		"redirectKeyword":       a.Config.RedirectKeyword,
+		"redirectTargetModel":   a.Config.RedirectTargetModel,
+		"redirectTargetName":    a.Config.RedirectTargetName,
+		"redirectTargetRouteId": a.Config.RedirectTargetRouteID,
+		"minimizeToTray":        a.Config.MinimizeToTray,
+		"autoStart":             a.Config.AutoStart,
+		"enableFileLog":         a.Config.EnableFileLog,
+		"port":                  a.Config.Port,
 	}
 }
 
 // UpdateConfig 更新配置
-func (a *AppService) UpdateConfig(redirectEnabled bool, redirectKeyword, redirectTargetModel string) error {
+func (a *AppService) UpdateConfig(redirectEnabled bool, redirectKeyword, redirectTargetModel string, redirectTargetRouteId int64) error {
 	a.Config.RedirectEnabled = redirectEnabled
 	a.Config.RedirectKeyword = redirectKeyword
 	a.Config.RedirectTargetModel = redirectTargetModel
+	a.Config.RedirectTargetRouteID = redirectTargetRouteId
+	return a.Config.Save()
+}
+
+// UpdatePort 更新端口配置
+func (a *AppService) UpdatePort(port int) error {
+	a.Config.Port = port
 	return a.Config.Save()
 }
 
@@ -332,5 +345,36 @@ func (a *AppService) SetEnableFileLog(enabled bool) error {
 
 	// 注意：实际的日志文件启用/禁用逻辑在 main 包中处理
 	log.Info("File log setting updated successfully")
+	return nil
+}
+
+// RestartApp 重启应用
+func (a *AppService) RestartApp() error {
+	log.Info("Restarting application...")
+
+	// 获取当前可执行文件路径
+	executable, err := os.Executable()
+	if err != nil {
+		log.Errorf("Failed to get executable path: %v", err)
+		return fmt.Errorf("failed to get executable path: %v", err)
+	}
+
+	// 启动新进程
+	cmd := exec.Command(executable)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	if err := cmd.Start(); err != nil {
+		log.Errorf("Failed to start new process: %v", err)
+		return fmt.Errorf("failed to start new process: %v", err)
+	}
+
+	log.Info("New process started, quitting current process...")
+
+	// 退出当前应用
+	if a.App != nil {
+		a.App.Quit()
+	}
 	return nil
 }

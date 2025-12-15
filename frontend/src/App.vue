@@ -121,7 +121,7 @@
 
             <n-grid-item>
               <n-card :bordered="false" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
-                <n-statistic :label="t('home.totalRequests')" :value="stats.total_requests">
+                <n-statistic :label="t('home.todayRequests')" :value="stats.today_requests || 0">
                   <template #prefix>
                     <n-icon size="24" color="#fff">
                       <StatsChartIcon />
@@ -497,7 +497,7 @@
 
                   <n-space align="center">
                     <n-icon size="20"><InformationCircleIcon /></n-icon>
-                    <n-text>{{ t('settings.version') }}: v2.0.2</n-text>
+                    <n-text>{{ t('settings.version') }}: v2.0.3</n-text>
                   </n-space>
 
                   <n-space align="center">
@@ -546,6 +546,26 @@
                   <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
                     {{ t('settings.enableFileLogDesc') }}
                   </n-text>
+
+                  <!-- API 端口设置 -->
+                  <div style="margin-top: 16px;">
+                    <n-text depth="2" style="font-size: 14px; margin-bottom: 8px; display: block;">{{ t('settings.apiPort') }}</n-text>
+                    <n-input-number
+                      v-model:value="settings.port"
+                      :min="1"
+                      :max="65535"
+                      style="max-width: 200px;"
+                    >
+                      <template #suffix>
+                        <n-button text size="small" @click="updatePort">
+                          {{ t('settings.save') }}
+                        </n-button>
+                      </template>
+                    </n-input-number>
+                    <n-text depth="3" style="font-size: 12px; margin-top: 4px; display: block;">
+                      {{ t('settings.apiPortDesc') }}
+                    </n-text>
+                  </div>
                 </n-space>
               </div>
 
@@ -660,6 +680,25 @@
         <li>{{ t('clearDialog.modelRanking') }}</li>
         <li>{{ t('clearDialog.heatmapData') }}</li>
       </ul>
+    </n-modal>
+
+    <!-- Restart Confirmation Dialog -->
+    <n-modal
+      v-model:show="showRestartDialog"
+      preset="dialog"
+      :title="t('restartDialog.title')"
+      type="warning"
+      :positive-text="t('restartDialog.confirm')"
+      :negative-text="t('restartDialog.cancel')"
+      @positive-click="restartApp"
+      @negative-click="showRestartDialog = false"
+    >
+      <template #icon>
+        <n-icon size="24" color="#f0a020">
+          <RefreshIcon />
+        </n-icon>
+      </template>
+      {{ t('restartDialog.message') }}
     </n-modal>
   </n-config-provider>
 </template>
@@ -782,6 +821,7 @@ const settings = ref({
   autoStart: false,
   minimizeToTray: false,
   enableFileLog: false,
+  port: 5642,
 })
 
 const updateRedirectKeyword = async () => {
@@ -793,13 +833,44 @@ const updateRedirectKeyword = async () => {
     await window.go.main.App.UpdateConfig(
       redirectConfig.value.enabled,
       settings.value.redirectKeyword,
-      redirectConfig.value.targetModel
+      redirectConfig.value.targetModel,
+      redirectConfig.value.targetRouteId
     )
     redirectConfig.value.keyword = settings.value.redirectKeyword
     showMessage("success", t('messages.redirectKeywordUpdated'))
     await loadConfig()
   } catch (error) {
     showMessage("error", t('messages.updateFailed') + ': ' + error)
+  }
+}
+
+// 更新端口设置
+const updatePort = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  try {
+    await window.go.main.App.UpdatePort(settings.value.port)
+    showMessage("success", t('settings.portUpdated'))
+    // 提示用户需要重启
+    showRestartDialog.value = true
+  } catch (error) {
+    showMessage("error", t('messages.updateFailed') + ': ' + error)
+  }
+}
+
+// 重启应用
+const restartApp = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  try {
+    // 调用后端重启方法
+    await window.go.main.App.RestartApp()
+  } catch (error) {
+    showMessage("error", t('messages.restartFailed') + ': ' + error)
   }
 }
 
@@ -1136,6 +1207,7 @@ const redirectConfig = ref({
   keyword: 'proxy_auto',
   targetModel: '',
   targetName: '',
+  targetRouteId: 0,
 })
 
 // Routes
@@ -1146,6 +1218,7 @@ const editingRoute = ref(null)
 const expandedGroups = ref([]) // 控制折叠面板展开状态
 const fileInput = ref(null) // 文件输入引用
 const showClearDialog = ref(false) // 清除数据确认对话框
+const showRestartDialog = ref(false) // 重启确认对话框
 
 // Computed: 按分组组织路由
 const groupedRoutes = computed(() => {
@@ -1174,8 +1247,9 @@ const pagination = {
 }
 
 // 设置为重定向按钮处理
-const setAsRedirect = async (model) => {
-  redirectConfig.value.targetModel = model
+const setAsRedirect = async (row) => {
+  redirectConfig.value.targetModel = row.model
+  redirectConfig.value.targetRouteId = row.id
   redirectConfig.value.enabled = true
   await saveRedirectConfig()
   showMessage("success", t('home.setRedirectSuccess'))
@@ -1291,8 +1365,9 @@ const modelsPageColumns = computed(() => [
       return h(NSpace, { align: 'center' }, {
         default: () => [
           h(NTag, { type: 'info' }, { default: () => row.model }),
-          // 如果是当前重定向目标，显示标记
-          redirectConfig.value.targetModel === row.model
+          // 如果是当前重定向目标，通过路由ID精确匹配（避免同ID跨分组显示问题）
+          (redirectConfig.value.targetRouteId === row.id || 
+           (redirectConfig.value.targetRouteId === 0 && redirectConfig.value.targetModel === row.model))
             ? h(NTag, { type: 'success', size: 'small' }, { default: () => t('home.redirectTarget') })
             : null
         ]
@@ -1335,7 +1410,7 @@ const modelsPageColumns = computed(() => [
             {
               size: 'small',
               type: 'primary',
-              onClick: () => setAsRedirect(row.model),
+              onClick: () => setAsRedirect(row),
             },
             { default: () => t('models.setAsTarget'), icon: () => h(NIcon, {}, { default: () => h(LinkIcon) }) }
           ),
@@ -1440,10 +1515,12 @@ const loadConfig = async () => {
     redirectConfig.value.keyword = data.redirectKeyword || 'proxy_auto'
     redirectConfig.value.targetModel = data.redirectTargetModel || ''
     redirectConfig.value.targetName = data.redirectTargetName || ''
+    redirectConfig.value.targetRouteId = data.redirectTargetRouteId || 0
     settings.value.redirectKeyword = data.redirectKeyword || 'proxy_auto' // 同步到设置
     settings.value.minimizeToTray = data.minimizeToTray || false
     settings.value.autoStart = data.autoStart || false
     settings.value.enableFileLog = data.enableFileLog || false
+    settings.value.port = data.port || 5642
     console.log('Config loaded:', config.value)
   } catch (error) {
     console.error('加载配置失败:', error)
@@ -1459,7 +1536,8 @@ const saveRedirectConfig = async () => {
     await window.go.main.App.UpdateConfig(
       redirectConfig.value.enabled,
       redirectConfig.value.keyword,
-      redirectConfig.value.targetModel
+      redirectConfig.value.targetModel,
+      redirectConfig.value.targetRouteId
     )
     showMessage("success", t('messages.redirectConfigSaved'))
     // 重新加载配置以获取最新的 targetName

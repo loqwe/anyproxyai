@@ -60,6 +60,7 @@
     "routeCount": "路由总数",
     "modelCount": "模型总数",
     "totalRequests": "请求总数",
+    "todayRequests": "今日请求",
     "todayTokens": "今日 Token",
     "redirectConfig": "代理重定向配置",
     "enableRedirect": "启用重定向",
@@ -148,6 +149,9 @@
     "enableFileLogDesc": "启用后日志将保存到 log/ 目录，按日期分文件存储",
     "fileLogEnabled": "已启用文件日志",
     "fileLogDisabled": "已禁用文件日志",
+    "apiPort": "API 端口",
+    "apiPortDesc": "修改 API 服务端口，需要重启应用才能生效",
+    "portUpdated": "端口已更新，请重启应用",
     "themeSettings": "主题设置",
     "currentTheme": "当前主题",
     "darkMode": "暗黑模式",
@@ -168,6 +172,12 @@
     "modelRanking": "模型使用排行",
     "heatmapData": "历史热力图数据"
   },
+  "restartDialog": {
+    "title": "需要重启",
+    "confirm": "立即重启",
+    "cancel": "稍后",
+    "message": "端口设置已更改，需要重启应用才能生效。"
+  },
   "messages": {
     "switchedToDark": "已切换到暗黑模式",
     "switchedToLight": "已切换到明亮模式",
@@ -185,7 +195,8 @@
     "minimizeDisabled": "已禁用关闭时最小化到托盘",
     "languageChanged": "语言已切换",
     "redirectConfigSaved": "重定向配置已保存",
-    "redirectConfigFailed": "保存重定向配置失败"
+    "redirectConfigFailed": "保存重定向配置失败",
+    "restartFailed": "重启失败"
   },
   "common": {
     "loading": "加载中...",
