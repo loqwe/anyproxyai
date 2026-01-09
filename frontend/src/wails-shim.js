@@ -65,6 +65,10 @@ const createWailsShim = () => {
     // Import
     ImportRouteFromFormat: (name, model, apiUrl, apiKey, group, targetFormat) => 
       callService('ImportRouteFromFormat', name, model, apiUrl, apiKey, group, targetFormat),
+    
+    // Database management
+    CompressDatabase: () => callService('CompressDatabase'),
+    GetUsageSummary: () => callService('GetUsageSummary'),
   }
 
   // Create the window.go.main.App structure

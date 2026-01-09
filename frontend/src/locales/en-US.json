@@ -80,6 +80,8 @@
     "anthropicPath": "Anthropic endpoint path",
     "geminiInterface": "Gemini API",
     "geminiPath": "Gemini generation endpoint path",
+    "cursorInterface": "Cursor IDE Interface (OpenAI)",
+    "cursorPath": "Cursor IDE endpoint path (auto-detect format)",
     "setRedirectSuccess": "Set as redirect target",
     "setRedirectFailed": "Failed to set redirect target",
     "redirectTarget": "Redirect Target"
@@ -131,7 +133,14 @@
     "tokens": "Tokens",
     "requestCount": "Requests",
     "clearSuccess": "Statistics cleared",
-    "clearFailed": "Clear failed"
+    "clearFailed": "Clear failed",
+    "usageSummary": "Usage Summary",
+    "weeklyUsage": "Weekly Usage",
+    "yearlyUsage": "Yearly Usage",
+    "totalUsage": "Total Usage",
+    "period": "Period",
+    "successCount": "Success",
+    "failCount": "Failed"
   },
   "settings": {
     "title": "Application Settings",
@@ -159,7 +168,14 @@
     "switchTheme": "Switch Theme",
     "languageSettings": "Language Settings",
     "language": "Interface Language",
-    "languageDesc": "Select interface language, follows system language on first launch"
+    "languageDesc": "Select interface language, follows system language on first launch",
+    "databaseManagement": "Database Management",
+    "compressDatabase": "Compress Database",
+    "compressDatabaseDesc": "Aggregate historical request logs by hour, delete data older than 366 days, free up storage space",
+    "compressing": "Compressing...",
+    "compressSuccess": "Database compression completed",
+    "compressFailed": "Database compression failed",
+    "compressResult": "Before: {before} records, After: {after} records, Deleted logs: {deleted}, Hourly stats: {hourly}"
   },
   "clearDialog": {
     "title": "Confirm Clear Data",

@@ -113,17 +113,34 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 		}
 	}
 
-	// 检查是否需要进�?API 转换
+	// 检查是否需要进行 API 转换
 	var transformedBody []byte
 	var targetURL string
 
 	// 清理路由 API URL（移除末尾斜杠）
 	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
 
-	// 智能检测适配�? 基于路由format和请求格�?(OpenAI格式请求)
-	adapterName := s.detectAdapterForRoute(route, "openai")
+	// 检测请求格式（支持 Cursor IDE 格式）
+	requestFormat := detectRequestFormat(reqData)
+	log.Infof("[Format Detection] Detected request format: %s", requestFormat)
+
+	// 如果是 Cursor 格式，先转换为标准 OpenAI 格式
+	if requestFormat == "cursor" {
+		log.Infof("[Cursor] Converting Cursor format request to OpenAI format")
+		convertedReq, err := s.adaptCursorRequest(reqData, model)
+		if err != nil {
+			log.Errorf("Failed to convert Cursor request: %v", err)
+			return nil, http.StatusInternalServerError, err
+		}
+		reqData = convertedReq
+		requestBody, _ = json.Marshal(reqData)
+		requestFormat = "openai" // 转换后变为 OpenAI 格式
+	}
+
+	// 智能检测适配器: 基于路由format和请求格式
+	adapterName := s.detectAdapterForRoute(route, requestFormat)
 	if adapterName != "" {
-		// 使用适配器转换请�?
+		// 使用适配器转换请求
 		adapter := adapters.GetAdapter(adapterName)
 		transformedReq, err := adapter.AdaptRequest(reqData, model)
 		if err != nil {
@@ -301,13 +318,30 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 	// 清理路由 API URL（移除末尾斜杠）
 	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
 
-	// 智能检测适配器: 基于路由format和请求格式 (OpenAI格式请求)
-	adapterName := s.detectAdapterForRoute(route, "openai")
+	// 检测请求格式（支持 Cursor IDE 格式）
+	requestFormat := detectRequestFormat(reqData)
+	log.Infof("[Stream Format Detection] Detected request format: %s", requestFormat)
+
+	// 如果是 Cursor 格式，先转换为标准 OpenAI 格式
+	if requestFormat == "cursor" {
+		log.Infof("[Cursor Stream] Converting Cursor format request to OpenAI format")
+		convertedReq, err := s.adaptCursorRequest(reqData, model)
+		if err != nil {
+			log.Errorf("Failed to convert Cursor request: %v", err)
+			return err
+		}
+		reqData = convertedReq
+		requestBody, _ = json.Marshal(reqData)
+		requestFormat = "openai" // 转换后变为 OpenAI 格式
+	}
+
+	// 智能检测适配器: 基于路由format和请求格式
+	adapterName := s.detectAdapterForRoute(route, requestFormat)
 	var transformedBody []byte
 	var targetURL string
 
 	if adapterName != "" {
-		// 使用适配器转换请�?
+		// 使用适配器转换请求
 		adapter := adapters.GetAdapter(adapterName)
 		if adapter == nil {
 			return fmt.Errorf("adapter not found: %s", adapterName)
@@ -1826,19 +1860,25 @@ func (s *ProxyService) convertClaudeToOpenAIResponse(claudeResp map[string]inter
 	return openaiResp
 }
 
-// convertOpenAIToGeminiResponse �?OpenAI 格式响应转换�?Gemini 格式
+// convertOpenAIToGeminiResponse 将 OpenAI 格式响应转换为 Gemini 格式
+// 使用 Google 官方 Gemini API 响应格式，包装为 APIMart 格式
 func (s *ProxyService) convertOpenAIToGeminiResponse(openaiResp map[string]interface{}) map[string]interface{} {
-	geminiResp := make(map[string]interface{})
+	geminiData := make(map[string]interface{})
 
-	// 转换 choices �?candidates
+	// 转换 choices 为 candidates
 	var text string
 	var finishReason string
+	var toolCalls []interface{}
 
 	if choices, ok := openaiResp["choices"].([]interface{}); ok && len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]interface{}); ok {
 			if message, ok := choice["message"].(map[string]interface{}); ok {
 				if content, ok := message["content"].(string); ok {
 					text = content
+				}
+				// 提取 tool_calls
+				if tc, ok := message["tool_calls"].([]interface{}); ok {
+					toolCalls = tc
 				}
 			}
 			if fr, ok := choice["finish_reason"].(string); ok {
@@ -1847,6 +1887,8 @@ func (s *ProxyService) convertOpenAIToGeminiResponse(openaiResp map[string]inter
 					finishReason = "STOP"
 				case "length":
 					finishReason = "MAX_TOKENS"
+				case "tool_calls":
+					finishReason = "STOP" // Gemini 使用 STOP，工具调用通过 functionCall 表示
 				default:
 					finishReason = "STOP"
 				}
@@ -1854,23 +1896,81 @@ func (s *ProxyService) convertOpenAIToGeminiResponse(openaiResp map[string]inter
 		}
 	}
 
-	geminiResp["candidates"] = []interface{}{
+	// 构建 parts
+	var parts []interface{}
+
+	// 如果有文本内容，添加 text part
+	if text != "" {
+		parts = append(parts, map[string]interface{}{
+			"text": text,
+		})
+	}
+
+	// 如果有 tool_calls，转换为 Gemini 的 functionCall 格式
+	if len(toolCalls) > 0 {
+		for _, tc := range toolCalls {
+			if toolCall, ok := tc.(map[string]interface{}); ok {
+				if function, ok := toolCall["function"].(map[string]interface{}); ok {
+					name, _ := function["name"].(string)
+					argsStr, _ := function["arguments"].(string)
+
+					// 解析 arguments JSON 字符串
+					var args map[string]interface{}
+					if argsStr != "" {
+						json.Unmarshal([]byte(argsStr), &args)
+					}
+					if args == nil {
+						args = make(map[string]interface{})
+					}
+
+					parts = append(parts, map[string]interface{}{
+						"functionCall": map[string]interface{}{
+							"name": name,
+							"args": args,
+						},
+					})
+				}
+			}
+		}
+	}
+
+	// 如果没有任何 parts，添加空文本
+	if len(parts) == 0 {
+		parts = append(parts, map[string]interface{}{
+			"text": "",
+		})
+	}
+
+	geminiData["candidates"] = []interface{}{
 		map[string]interface{}{
 			"content": map[string]interface{}{
-				"role": "model",
-				"parts": []interface{}{
-					map[string]interface{}{
-						"text": text,
-					},
-				},
+				"role":  "model",
+				"parts": parts,
 			},
 			"finishReason": finishReason,
+			"index":        0,
+			"safetyRatings": []interface{}{
+				map[string]interface{}{
+					"category":    "HARM_CATEGORY_HATE_SPEECH",
+					"probability": "NEGLIGIBLE",
+				},
+			},
 		},
 	}
 
-	// 转换 usage
+	// 添加 promptFeedback
+	geminiData["promptFeedback"] = map[string]interface{}{
+		"safetyRatings": []interface{}{
+			map[string]interface{}{
+				"category":    "HARM_CATEGORY_HATE_SPEECH",
+				"probability": "NEGLIGIBLE",
+			},
+		},
+	}
+
+	// 转换 usage 为 usageMetadata
+	usageMetadata := make(map[string]interface{})
 	if usage, ok := openaiResp["usage"].(map[string]interface{}); ok {
-		usageMetadata := make(map[string]interface{})
 		if promptTokens, ok := usage["prompt_tokens"].(float64); ok {
 			usageMetadata["promptTokenCount"] = int(promptTokens)
 		} else if promptTokens, ok := usage["prompt_tokens"].(int); ok {
@@ -1886,7 +1986,13 @@ func (s *ProxyService) convertOpenAIToGeminiResponse(openaiResp map[string]inter
 		} else if totalTokens, ok := usage["total_tokens"].(int); ok {
 			usageMetadata["totalTokenCount"] = totalTokens
 		}
-		geminiResp["usageMetadata"] = usageMetadata
+	}
+	geminiData["usageMetadata"] = usageMetadata
+
+	// 包装为 APIMart 格式: {"code": 200, "data": {...}}
+	geminiResp := map[string]interface{}{
+		"code": 200,
+		"data": geminiData,
 	}
 
 	return geminiResp
@@ -2009,7 +2115,7 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 		needConvertResponse = "none"
 		log.Infof("Forwarding Gemini request directly to: %s", targetURL)
 	} else if targetFormat == "openai" {
-		// 目标�?OpenAI 格式，需要将 Gemini 请求转换�?OpenAI 格式
+		// 目标是 OpenAI 格式，需要将 Gemini 请求转换为 OpenAI 格式
 		adapter := adapters.GetAdapter("gemini-to-openai")
 		if adapter == nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("gemini-to-openai adapter not found")
@@ -2020,6 +2126,7 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 			return nil, http.StatusInternalServerError, err
 		}
 		transformedBody, _ = json.Marshal(transformedReq)
+		log.Infof("[Gemini Request] Transformed OpenAI request: %s", string(transformedBody))
 		targetURL = buildOpenAIChatURL(route.APIUrl)
 		needConvertResponse = "openai"
 		log.Infof("Converting Gemini -> OpenAI, target: %s", targetURL)
@@ -2091,32 +2198,42 @@ func (s *ProxyService) ProxyGeminiRequest(requestBody []byte, headers map[string
 		return nil, http.StatusInternalServerError, err
 	}
 
-	// 根据需要转换响�?
+	// 根据需要转换响应
 	if resp.StatusCode == http.StatusOK && needConvertResponse != "none" {
 		var respData map[string]interface{}
 		if err := json.Unmarshal(responseBody, &respData); err == nil {
+			log.Infof("[Gemini Request] Original response: %s", string(responseBody))
 			switch needConvertResponse {
 			case "openai":
-				// OpenAI �?Gemini
+				// OpenAI -> Gemini
 				log.Infof("[Gemini Request] Converting OpenAI response to Gemini format")
 				geminiResp := s.convertOpenAIToGeminiResponse(respData)
 				if convertedBody, err := json.Marshal(geminiResp); err == nil {
+					log.Infof("[Gemini Request] Converted Gemini response: %s", string(convertedBody))
 					return convertedBody, resp.StatusCode, nil
+				} else {
+					log.Errorf("[Gemini Request] Failed to marshal Gemini response: %v", err)
 				}
 			case "claude":
-				// Claude �?OpenAI �?Gemini
+				// Claude -> OpenAI -> Gemini
 				log.Infof("[Gemini Request] Converting Claude response to Gemini format")
-				// 先将 Claude 转换�?OpenAI
+				// 先将 Claude 转换为 OpenAI
 				openaiResp := s.convertClaudeToOpenAIResponse(respData)
-				// 再将 OpenAI 转换�?Gemini
+				// 再将 OpenAI 转换为 Gemini
 				geminiResp := s.convertOpenAIToGeminiResponse(openaiResp)
 				if convertedBody, err := json.Marshal(geminiResp); err == nil {
+					log.Infof("[Gemini Request] Converted Gemini response: %s", string(convertedBody))
 					return convertedBody, resp.StatusCode, nil
+				} else {
+					log.Errorf("[Gemini Request] Failed to marshal Gemini response: %v", err)
 				}
 			}
+		} else {
+			log.Errorf("[Gemini Request] Failed to unmarshal response: %v", err)
 		}
 	}
 
+	log.Infof("[Gemini Request] Returning original response (no conversion or conversion failed)")
 	return responseBody, resp.StatusCode, nil
 }
 
@@ -2295,13 +2412,23 @@ func (s *ProxyService) ProxyGeminiStreamRequest(requestBody []byte, headers map[
 	}
 }
 
-// streamOpenAIToGemini �?OpenAI 流式响应转换�?Gemini 流式响应
+// streamOpenAIToGemini 将 OpenAI 流式响应转换为 Gemini 流式响应
 func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, flusher http.Flusher, model string, routeID int64) error {
+	log.Infof("[OpenAI->Gemini Stream] Starting conversion for model: %s", model)
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 
 	var totalPromptTokens int
 	var totalCompletionTokens int
+	var chunkCount int
+
+	// 用于累积 tool_calls（OpenAI 流式发送 tool_calls 是分片的：先发 name，再分片发 arguments）
+	type toolCallAccumulator struct {
+		ID        string
+		Name      string
+		Arguments string
+	}
+	toolCallsMap := make(map[int]*toolCallAccumulator) // key 是 tool_call 的 index
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -2314,12 +2441,13 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 			data := strings.TrimPrefix(line, "data: ")
 
 			if data == "[DONE]" {
-				// 发送最终的 Gemini 格式结束
+				log.Infof("[OpenAI->Gemini Stream] Received [DONE], total chunks: %d", chunkCount)
 				break
 			}
 
 			var chunk map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				log.Warnf("[OpenAI->Gemini Stream] Failed to parse chunk: %v", err)
 				continue
 			}
 
@@ -2337,8 +2465,10 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 			if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
 				if choice, ok := choices[0].(map[string]interface{}); ok {
 					if delta, ok := choice["delta"].(map[string]interface{}); ok {
+						// 处理文本内容
 						if content, ok := delta["content"].(string); ok && content != "" {
-							// 构建 Gemini 格式的流式响�?
+							chunkCount++
+							// 构建 Google 官方 Gemini 格式的流式响应
 							geminiChunk := map[string]interface{}{
 								"candidates": []interface{}{
 									map[string]interface{}{
@@ -2350,26 +2480,120 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 												},
 											},
 										},
+										"index": 0,
 									},
 								},
 							}
 
 							chunkData, _ := json.Marshal(geminiChunk)
+							log.Debugf("[OpenAI->Gemini Stream] Chunk #%d: %s", chunkCount, string(chunkData))
 							fmt.Fprintf(writer, "data: %s\n\n", string(chunkData))
 							flusher.Flush()
 						}
+
+						// 处理 tool_calls - 累积分片数据
+						if toolCalls, ok := delta["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
+							for _, tc := range toolCalls {
+								if toolCall, ok := tc.(map[string]interface{}); ok {
+									// 获取 tool_call 的 index
+									tcIndex := 0
+									if idx, ok := toolCall["index"].(float64); ok {
+										tcIndex = int(idx)
+									}
+
+									// 初始化累积器
+									if toolCallsMap[tcIndex] == nil {
+										toolCallsMap[tcIndex] = &toolCallAccumulator{}
+									}
+									acc := toolCallsMap[tcIndex]
+
+									// 提取 id
+									if id, ok := toolCall["id"].(string); ok && id != "" {
+										acc.ID = id
+									}
+
+									// 提取 function 信息
+									if function, ok := toolCall["function"].(map[string]interface{}); ok {
+										if name, ok := function["name"].(string); ok && name != "" {
+											acc.Name = name
+											log.Infof("[OpenAI->Gemini Stream] Tool call #%d name: %s", tcIndex, name)
+										}
+										if argsFragment, ok := function["arguments"].(string); ok {
+											acc.Arguments += argsFragment
+										}
+									}
+								}
+							}
+						}
 					}
 
-					// 检查是否结�?
+					// 检查是否结束
 					if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-						// 发送带�?finishReason 的最终块
-						geminiChunk := map[string]interface{}{
+						log.Infof("[OpenAI->Gemini Stream] Finish reason: %s", finishReason)
+
+						// 如果是 tool_calls 结束，先发送累积的 tool_calls
+						if finishReason == "tool_calls" && len(toolCallsMap) > 0 {
+							var functionCallParts []interface{}
+							for idx := 0; idx < len(toolCallsMap); idx++ {
+								acc := toolCallsMap[idx]
+								if acc != nil && acc.Name != "" {
+									var args map[string]interface{}
+									if acc.Arguments != "" {
+										if err := json.Unmarshal([]byte(acc.Arguments), &args); err != nil {
+											log.Warnf("[OpenAI->Gemini Stream] Failed to parse tool_call arguments: %v", err)
+											args = make(map[string]interface{})
+										}
+									}
+									if args == nil {
+										args = make(map[string]interface{})
+									}
+
+									functionCallParts = append(functionCallParts, map[string]interface{}{
+										"functionCall": map[string]interface{}{
+											"name": acc.Name,
+											"args": args,
+										},
+									})
+									log.Infof("[OpenAI->Gemini Stream] Sending tool call: name=%s, args=%s", acc.Name, acc.Arguments)
+								}
+							}
+
+							if len(functionCallParts) > 0 {
+								chunkCount++
+								geminiChunk := map[string]interface{}{
+									"candidates": []interface{}{
+										map[string]interface{}{
+											"content": map[string]interface{}{
+												"role":  "model",
+												"parts": functionCallParts,
+											},
+											"index": 0,
+										},
+									},
+								}
+
+								chunkData, _ := json.Marshal(geminiChunk)
+								log.Infof("[OpenAI->Gemini Stream] Tool calls chunk: %s", string(chunkData))
+								fmt.Fprintf(writer, "data: %s\n\n", string(chunkData))
+								flusher.Flush()
+							}
+						}
+
+						// 发送带有 finishReason 的最终块（包装为 APIMart 格式）
+						geminiData := map[string]interface{}{
 							"candidates": []interface{}{
 								map[string]interface{}{
 									"finishReason": "STOP",
+									"index":        0,
 									"content": map[string]interface{}{
 										"role":  "model",
 										"parts": []interface{}{},
+									},
+									"safetyRatings": []interface{}{
+										map[string]interface{}{
+											"category":    "HARM_CATEGORY_HATE_SPEECH",
+											"probability": "NEGLIGIBLE",
+										},
 									},
 								},
 							},
@@ -2379,8 +2603,13 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 								"totalTokenCount":      totalPromptTokens + totalCompletionTokens,
 							},
 						}
+						geminiChunk := map[string]interface{}{
+							"code": 200,
+							"data": geminiData,
+						}
 
 						chunkData, _ := json.Marshal(geminiChunk)
+						log.Infof("[OpenAI->Gemini Stream] Final chunk: %s", string(chunkData))
 						fmt.Fprintf(writer, "data: %s\n\n", string(chunkData))
 						flusher.Flush()
 					}
@@ -2391,12 +2620,13 @@ func (s *ProxyService) streamOpenAIToGemini(reader io.Reader, writer io.Writer, 
 
 	// 记录请求
 	totalTokens := totalPromptTokens + totalCompletionTokens
+	log.Infof("[OpenAI->Gemini Stream] Completed: promptTokens=%d, completionTokens=%d, totalTokens=%d", totalPromptTokens, totalCompletionTokens, totalTokens)
 	s.routeService.LogRequest(model, routeID, totalPromptTokens, totalCompletionTokens, totalTokens, true, "")
 
 	return nil
 }
 
-// streamClaudeToGemini �?Claude 流式响应转换�?Gemini 流式响应
+// streamClaudeToGemini 将 Claude 流式响应转换为 Gemini 流式响应
 func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, flusher http.Flusher, model string, routeID int64) error {
 	log.Infof("[Claude->Gemini Stream] Starting conversion for model: %s", model)
 	scanner := bufio.NewScanner(reader)
@@ -2416,10 +2646,10 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 
 		log.Infof("[Claude->Gemini Stream] Processing line: %s", line)
 
-		// Claude SSE 格式: "data: {...}" �?"data:{...}"
+		// Claude SSE 格式: "data: {...}" 或 "data:{...}"
 		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimPrefix(line, "data:")
-			data = strings.TrimSpace(data) // 去掉可能的空�?
+			data = strings.TrimSpace(data) // 去掉可能的空格
 
 			var event map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -2449,8 +2679,8 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 							chunkCount++
 							log.Infof("[Claude->Gemini Stream] Converting text chunk #%d: %s", chunkCount, text)
 
-							// 构建 Gemini 格式的流式响�?
-							geminiChunk := map[string]interface{}{
+							// 构建 Gemini 格式的流式响应（包装为 APIMart 格式）
+							geminiData := map[string]interface{}{
 								"candidates": []interface{}{
 									map[string]interface{}{
 										"content": map[string]interface{}{
@@ -2461,8 +2691,13 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 												},
 											},
 										},
+										"index": 0,
 									},
 								},
+							}
+							geminiChunk := map[string]interface{}{
+								"code": 200,
+								"data": geminiData,
 							}
 
 							chunkData, _ := json.Marshal(geminiChunk)
@@ -2482,14 +2717,21 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 				}
 
 			case "message_stop":
-				// 发送带�?finishReason 的最终块
-				geminiChunk := map[string]interface{}{
+				// 发送带有 finishReason 的最终块（包装为 APIMart 格式）
+				geminiData := map[string]interface{}{
 					"candidates": []interface{}{
 						map[string]interface{}{
 							"finishReason": "STOP",
+							"index":        0,
 							"content": map[string]interface{}{
 								"role":  "model",
 								"parts": []interface{}{},
+							},
+							"safetyRatings": []interface{}{
+								map[string]interface{}{
+									"category":    "HARM_CATEGORY_HATE_SPEECH",
+									"probability": "NEGLIGIBLE",
+								},
 							},
 						},
 					},
@@ -2498,6 +2740,10 @@ func (s *ProxyService) streamClaudeToGemini(reader io.Reader, writer io.Writer, 
 						"candidatesTokenCount": totalOutputTokens,
 						"totalTokenCount":      totalInputTokens + totalOutputTokens,
 					},
+				}
+				geminiChunk := map[string]interface{}{
+					"code": 200,
+					"data": geminiData,
 				}
 
 				chunkData, _ := json.Marshal(geminiChunk)
@@ -3084,4 +3330,381 @@ func (s *ProxyService) streamOpenAIToClaudeCode(reader io.Reader, writer io.Writ
 	s.routeService.LogRequest(model, routeID, totalPromptTokens, totalCompletionTokens, totalTokens, true, "")
 
 	return nil
+}
+
+// ============ Cursor IDE 格式检测和处理 ============
+
+// isCursorFormat 检测请求是否为 Cursor IDE 格式
+// Cursor 使用 OpenAI 接口但 tools 和 messages 格式类似 Anthropic/Claude
+// 主要特征：
+// 1. Tool 定义使用扁平格式 {name, description, input_schema} 而非 OpenAI 的嵌套格式
+// 2. Tool calls 在 assistant 消息的 content 数组中作为 tool_use 块
+// 3. Tool results 在 user 消息的 content 数组中作为 tool_result 块
+func isCursorFormat(reqData map[string]interface{}) bool {
+	// 检查 tools 是否使用 Cursor 扁平格式
+	if tools, ok := reqData["tools"].([]interface{}); ok && len(tools) > 0 {
+		for _, tool := range tools {
+			if toolMap, ok := tool.(map[string]interface{}); ok {
+				// Cursor 扁平格式：直接有 name 和 input_schema 字段，没有 function 嵌套
+				if _, hasName := toolMap["name"].(string); hasName {
+					if _, hasInputSchema := toolMap["input_schema"]; hasInputSchema {
+						log.Debugf("[Cursor Detection] Found Cursor flat tool format")
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	// 检查 messages 是否包含 Cursor/Anthropic 格式的 tool_use 或 tool_result
+	if messages, ok := reqData["messages"].([]interface{}); ok {
+		for _, msg := range messages {
+			if msgMap, ok := msg.(map[string]interface{}); ok {
+				if content, ok := msgMap["content"].([]interface{}); ok {
+					for _, block := range content {
+						if blockMap, ok := block.(map[string]interface{}); ok {
+							blockType, _ := blockMap["type"].(string)
+							if blockType == "tool_use" || blockType == "tool_result" {
+								log.Debugf("[Cursor Detection] Found Cursor %s block in messages", blockType)
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// detectRequestFormat 检测请求的格式类型
+// 返回: "cursor", "openai", "claude", "gemini"
+func detectRequestFormat(reqData map[string]interface{}) string {
+	// 首先检查是否是 Cursor 格式
+	if isCursorFormat(reqData) {
+		return "cursor"
+	}
+
+	// 检查是否有 Claude 特有的字段
+	if _, hasSystem := reqData["system"]; hasSystem {
+		// Claude 使用单独的 system 字段
+		return "claude"
+	}
+
+	// 检查 messages 格式
+	if messages, ok := reqData["messages"].([]interface{}); ok && len(messages) > 0 {
+		for _, msg := range messages {
+			if msgMap, ok := msg.(map[string]interface{}); ok {
+				// 检查是否有 tool_calls 字段（OpenAI 格式）
+				if _, hasToolCalls := msgMap["tool_calls"]; hasToolCalls {
+					return "openai"
+				}
+			}
+		}
+	}
+
+	// 默认为 OpenAI 格式
+	return "openai"
+}
+
+// adaptCursorRequest 将 Cursor 格式请求转换为标准 OpenAI 格式
+func (s *ProxyService) adaptCursorRequest(reqData map[string]interface{}, model string) (map[string]interface{}, error) {
+	adapter := adapters.GetAdapter("cursor")
+	if adapter == nil {
+		return nil, fmt.Errorf("cursor adapter not found")
+	}
+	return adapter.AdaptRequest(reqData, model)
+}
+
+// ProxyCursorRequest 代理 Cursor IDE 专用请求
+// Cursor 使用 OpenAI 兼容接口但 tools 和 messages 格式类似 Anthropic/Claude
+// 自动检测并转换 Cursor 格式为标准 OpenAI 格式
+func (s *ProxyService) ProxyCursorRequest(requestBody []byte, headers map[string]string) ([]byte, int, error) {
+	// 解析请求
+	var reqData map[string]interface{}
+	if err := json.Unmarshal(requestBody, &reqData); err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %v", err)
+	}
+
+	model, ok := reqData["model"].(string)
+	if !ok || model == "" {
+		return nil, http.StatusBadRequest, fmt.Errorf("'model' field is required")
+	}
+
+	log.Infof("[Cursor] Received request for model: %s", model)
+
+	// 提取真实的模型名
+	realModel := model
+	if strings.Contains(model, ":streamGenerateContent") {
+		realModel = strings.TrimSuffix(model, ":streamGenerateContent")
+	}
+
+	// 检查是否是重定向关键字
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return nil, http.StatusNotFound, fmt.Errorf("redirect target not configured or not found: %v", err)
+		}
+		log.Infof("[Cursor] Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
+		reqData["model"] = model
+	} else {
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			availableModels, _ := s.routeService.GetAvailableModels()
+			return nil, http.StatusNotFound, fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+		}
+	}
+
+	// 检测请求格式
+	requestFormat := detectRequestFormat(reqData)
+	log.Infof("[Cursor] Detected request format: %s", requestFormat)
+
+	// 如果是 Cursor 格式，转换为标准 OpenAI 格式
+	if requestFormat == "cursor" {
+		log.Infof("[Cursor] Converting Cursor format request to OpenAI format")
+		convertedReq, err := s.adaptCursorRequest(reqData, model)
+		if err != nil {
+			log.Errorf("[Cursor] Failed to convert request: %v", err)
+			return nil, http.StatusInternalServerError, err
+		}
+		reqData = convertedReq
+		requestFormat = "openai"
+	}
+
+	// 清理路由 API URL
+	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
+
+	// 智能检测适配器
+	adapterName := s.detectAdapterForRoute(route, requestFormat)
+	var transformedBody []byte
+	var targetURL string
+
+	if adapterName != "" {
+		adapter := adapters.GetAdapter(adapterName)
+		transformedReq, err := adapter.AdaptRequest(reqData, model)
+		if err != nil {
+			log.Errorf("[Cursor] Failed to adapt request: %v", err)
+			return nil, http.StatusInternalServerError, err
+		}
+		transformedBody, _ = json.Marshal(transformedReq)
+		targetURL = s.buildAdapterURL(cleanAPIUrl, adapterName, model)
+	} else {
+		transformedBody, _ = json.Marshal(reqData)
+		targetURL = buildOpenAIChatURL(route.APIUrl)
+	}
+
+	log.Infof("[Cursor] Routing to: %s (route: %s, adapter: %s)", targetURL, route.Name, adapterName)
+
+	// 创建代理请求
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	proxyReq.Header.Set("Content-Type", "application/json")
+	if route.APIKey != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+route.APIKey)
+	} else if auth := headers["Authorization"]; auth != "" {
+		proxyReq.Header.Set("Authorization", auth)
+	}
+
+	// 发送请求
+	startTime := time.Now()
+	resp, err := s.httpClient.Do(proxyReq)
+	if err != nil {
+		s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, err.Error())
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("backend service unavailable: %v", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, err.Error())
+		return nil, http.StatusInternalServerError, err
+	}
+
+	log.Infof("[Cursor] Response received from %s in %v, status: %d", route.Name, time.Since(startTime), resp.StatusCode)
+
+	// 如果是认证错误，记录更详细的信息
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		errMsg := fmt.Sprintf("backend auth error: %d - %s (route: %s, id: %d, url: %s - please check API key configuration)", resp.StatusCode, string(responseBody), route.Name, route.ID, targetURL)
+		s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, errMsg)
+		return nil, resp.StatusCode, fmt.Errorf(errMsg)
+	}
+
+	// 记录使用情况
+	if resp.StatusCode == http.StatusOK {
+		var respData map[string]interface{}
+		if err := json.Unmarshal(responseBody, &respData); err == nil {
+			if usage, ok := respData["usage"].(map[string]interface{}); ok {
+				totalTokens := int(usage["total_tokens"].(float64))
+				promptTokens := int(usage["prompt_tokens"].(float64))
+				completionTokens := int(usage["completion_tokens"].(float64))
+				s.routeService.LogRequest(model, route.ID, promptTokens, completionTokens, totalTokens, true, "")
+			}
+		}
+	} else {
+		s.routeService.LogRequest(model, route.ID, 0, 0, 0, false, string(responseBody))
+	}
+
+	// 如果使用了适配器，转换响应
+	if adapterName != "" {
+		adapter := adapters.GetAdapter(adapterName)
+		if adapter != nil {
+			var respData map[string]interface{}
+			if err := json.Unmarshal(responseBody, &respData); err == nil {
+				adaptedResp, err := adapter.AdaptResponse(respData)
+				if err != nil {
+					log.Errorf("[Cursor] Failed to adapt response: %v", err)
+				} else {
+					responseBody, _ = json.Marshal(adaptedResp)
+				}
+			}
+		}
+	}
+
+	return responseBody, resp.StatusCode, nil
+}
+
+// ProxyCursorStreamRequest 代理 Cursor IDE 专用流式请求
+func (s *ProxyService) ProxyCursorStreamRequest(requestBody []byte, headers map[string]string, writer io.Writer, flusher http.Flusher) error {
+	// 解析请求
+	var reqData map[string]interface{}
+	if err := json.Unmarshal(requestBody, &reqData); err != nil {
+		return fmt.Errorf("invalid JSON body: %v", err)
+	}
+
+	model, ok := reqData["model"].(string)
+	if !ok || model == "" {
+		return fmt.Errorf("'model' field is required")
+	}
+
+	log.Infof("[Cursor Stream] Received request for model: %s", model)
+
+	// 提取真实的模型名
+	realModel := model
+	if strings.Contains(model, ":streamGenerateContent") {
+		realModel = strings.TrimSuffix(model, ":streamGenerateContent")
+	}
+
+	// 检查是否是重定向关键字
+	var route *database.ModelRoute
+	var err error
+	isRedirect := s.config.RedirectEnabled && (realModel == s.config.RedirectKeyword || strings.HasPrefix(realModel, s.config.RedirectKeyword+":"))
+
+	if isRedirect {
+		route, err = s.getRedirectRoute()
+		if err != nil {
+			return fmt.Errorf("redirect target not configured or not found: %v", err)
+		}
+		log.Infof("[Cursor Stream] Redirecting %s to route: %s (model: %s, id: %d)", realModel, route.Name, route.Model, route.ID)
+		model = route.Model
+		reqData["model"] = model
+	} else {
+		route, err = s.routeService.GetRouteByModel(model)
+		if err != nil {
+			if strings.Contains(err.Error(), "model not found") {
+				availableModels, _ := s.routeService.GetAvailableModels()
+				return fmt.Errorf("model '%s' not found in route list. Available models: %v", model, availableModels)
+			}
+			return fmt.Errorf("route lookup failed for model '%s': %v", model, err)
+		}
+	}
+
+	// 检测请求格式
+	requestFormat := detectRequestFormat(reqData)
+	log.Infof("[Cursor Stream] Detected request format: %s", requestFormat)
+
+	// 如果是 Cursor 格式，转换为标准 OpenAI 格式
+	if requestFormat == "cursor" {
+		log.Infof("[Cursor Stream] Converting Cursor format request to OpenAI format")
+		convertedReq, err := s.adaptCursorRequest(reqData, model)
+		if err != nil {
+			log.Errorf("[Cursor Stream] Failed to convert request: %v", err)
+			return err
+		}
+		reqData = convertedReq
+		requestFormat = "openai"
+	}
+
+	// 清理路由 API URL
+	cleanAPIUrl := strings.TrimSuffix(route.APIUrl, "/")
+
+	// 智能检测适配器
+	adapterName := s.detectAdapterForRoute(route, requestFormat)
+	var transformedBody []byte
+	var targetURL string
+
+	if adapterName != "" {
+		adapter := adapters.GetAdapter(adapterName)
+		if adapter == nil {
+			return fmt.Errorf("adapter not found: %s", adapterName)
+		}
+
+		reqData["stream"] = true
+		transformedReq, err := adapter.AdaptRequest(reqData, model)
+		if err != nil {
+			log.Errorf("[Cursor Stream] Failed to adapt request: %v", err)
+			return err
+		}
+		transformedBody, _ = json.Marshal(transformedReq)
+		targetURL = s.buildAdapterStreamURL(cleanAPIUrl, adapterName, model)
+	} else {
+		reqData["stream"] = true
+		transformedBody, _ = json.Marshal(reqData)
+		targetURL = buildOpenAIChatURL(route.APIUrl)
+	}
+
+	log.Infof("[Cursor Stream] Routing to: %s (route: %s, adapter: %s)", targetURL, route.Name, adapterName)
+
+	// 创建代理请求
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(transformedBody))
+	if err != nil {
+		return err
+	}
+
+	proxyReq.Header.Set("Content-Type", "application/json")
+	if route.APIKey != "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+route.APIKey)
+		log.Infof("[Cursor Stream] Setting Authorization header with route API key (key length: %d)", len(route.APIKey))
+	} else if auth := headers["Authorization"]; auth != "" {
+		proxyReq.Header.Set("Authorization", auth)
+		log.Infof("[Cursor Stream] Using original Authorization header")
+	} else {
+		log.Warnf("[Cursor Stream] No API key available for route: %s", route.Name)
+	}
+
+	// Claude 需要特殊的版本头
+	if adapterName == "anthropic" {
+		proxyReq.Header.Set("anthropic-version", "2023-06-01")
+	}
+
+	// 发送请求
+	resp, err := s.httpClient.Do(proxyReq)
+	if err != nil {
+		return fmt.Errorf("backend connection error (route: %s, url: %s): %v", route.Name, targetURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		// 如果是认证错误，提供更详细的路由信息
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			return fmt.Errorf("backend auth error: %d - %s (route: %s, id: %d, url: %s - please check API key configuration)", resp.StatusCode, string(body), route.Name, route.ID, targetURL)
+		}
+		return fmt.Errorf("backend error: %d - %s (route: %s, url: %s)", resp.StatusCode, string(body), route.Name, targetURL)
+	}
+
+	// 流式传输响应
+	if adapterName != "" {
+		return s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID)
+	} else {
+		return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+	}
 }

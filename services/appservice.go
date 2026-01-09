@@ -378,3 +378,21 @@ func (a *AppService) RestartApp() error {
 	}
 	return nil
 }
+
+// CompressDatabase 压缩数据库
+// 将历史请求日志按小时聚合，删除超过366天的数据，更新用量汇总
+func (a *AppService) CompressDatabase() (map[string]interface{}, error) {
+	log.Info("Starting database compression...")
+	result, err := a.RouteService.CompressDatabase()
+	if err != nil {
+		log.Errorf("Database compression failed: %v", err)
+		return nil, fmt.Errorf("database compression failed: %v", err)
+	}
+	log.Info("Database compression completed successfully")
+	return result, nil
+}
+
+// GetUsageSummary 获取用量汇总（周/年/总用量）
+func (a *AppService) GetUsageSummary() (map[string]interface{}, error) {
+	return a.RouteService.GetUsageSummary()
+}

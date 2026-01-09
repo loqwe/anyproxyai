@@ -1,7 +1,9 @@
 package adapters
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -23,6 +25,14 @@ func (a *ClaudeToOpenAIAdapter) AdaptRequest(reqData map[string]interface{}, mod
 	//   ]
 	// }
 	//
+	// Claude Code 的 system 可能是数组格式（带 cache_control）:
+	// {
+	//   "system": [
+	//     {"type": "text", "text": "You are Claude Code...", "cache_control": {"type": "ephemeral"}},
+	//     {"type": "text", "text": "Additional instructions...", "cache_control": {"type": "ephemeral"}}
+	//   ]
+	// }
+	//
 	// OpenAI 请求格式示例:
 	// {
 	//   "model": "gpt-3.5-turbo",
@@ -37,11 +47,8 @@ func (a *ClaudeToOpenAIAdapter) AdaptRequest(reqData map[string]interface{}, mod
 	// 复制模型名
 	openaiReq["model"] = model
 
-	// 处理 system 参数 - Claude 支持单独的 system 字段，OpenAI 需要作为第一条消息
-	var systemMessage string
-	if system, ok := reqData["system"].(string); ok && system != "" {
-		systemMessage = system
-	}
+	// 处理 system 参数 - Claude 支持单独的 system 字段（字符串或数组），OpenAI 需要作为第一条消息
+	systemMessage := convertClaudeSystemToString(reqData["system"])
 
 	// 转换消息格式 - Claude 和 OpenAI 的消息格式基本相同
 	if messages, ok := reqData["messages"].([]interface{}); ok {
@@ -57,37 +64,53 @@ func (a *ClaudeToOpenAIAdapter) AdaptRequest(reqData map[string]interface{}, mod
 
 		for _, msg := range messages {
 			if msgMap, ok := msg.(map[string]interface{}); ok {
-				openaiMsg := make(map[string]interface{})
+				role, _ := msgMap["role"].(string)
+				content := msgMap["content"]
 
-				// 复制 role 和 content
-				if role, ok := msgMap["role"].(string); ok {
-					openaiMsg["role"] = role
+				// 处理 tool_result - 转换为 OpenAI 的 tool 角色消息
+				if role == "user" {
+					if contentArr, isArray := content.([]interface{}); isArray {
+						// 检查是否包含 tool_result
+						convertedMsgs := convertClaudeUserMessage(contentArr)
+						openaiMessages = append(openaiMessages, convertedMsgs...)
+						continue
+					}
 				}
 
+				// 处理 assistant 消息 - 可能包含 tool_use
+				if role == "assistant" {
+					if contentArr, isArray := content.([]interface{}); isArray {
+						assistantMsg := convertClaudeAssistantMessage(contentArr)
+						openaiMessages = append(openaiMessages, assistantMsg)
+						continue
+					}
+				}
+
+				openaiMsg := make(map[string]interface{})
+				openaiMsg["role"] = role
+
 				// 处理 content - 可能是字符串或数组
-				if content, ok := msgMap["content"]; ok {
-					switch v := content.(type) {
-					case string:
-						// 简单的文本内容
-						openaiMsg["content"] = v
-					case []interface{}:
-						// 多模态内容 - Claude 格式
-						// [{"type": "text", "text": "..."}]
-						// 转换为 OpenAI 格式的文本
-						var textContent string
-						for _, part := range v {
-							if partMap, ok := part.(map[string]interface{}); ok {
-								if partMap["type"] == "text" {
-									if text, ok := partMap["text"].(string); ok {
-										textContent += text
-									}
+				switch v := content.(type) {
+				case string:
+					// 简单的文本内容
+					openaiMsg["content"] = v
+				case []interface{}:
+					// 多模态内容 - Claude 格式
+					// [{"type": "text", "text": "..."}]
+					// 转换为 OpenAI 格式的文本
+					var textContent string
+					for _, part := range v {
+						if partMap, ok := part.(map[string]interface{}); ok {
+							if partMap["type"] == "text" {
+								if text, ok := partMap["text"].(string); ok {
+									textContent += text
 								}
 							}
 						}
-						openaiMsg["content"] = textContent
-					default:
-						openaiMsg["content"] = fmt.Sprintf("%v", v)
 					}
+					openaiMsg["content"] = textContent
+				default:
+					openaiMsg["content"] = fmt.Sprintf("%v", v)
 				}
 
 				openaiMessages = append(openaiMessages, openaiMsg)
@@ -95,6 +118,19 @@ func (a *ClaudeToOpenAIAdapter) AdaptRequest(reqData map[string]interface{}, mod
 		}
 
 		openaiReq["messages"] = openaiMessages
+	}
+
+	// 转换 tools - Claude 格式转 OpenAI 格式
+	if tools, ok := reqData["tools"].([]interface{}); ok && len(tools) > 0 {
+		openaiTools := convertClaudeToolsToOpenAI(tools)
+		if len(openaiTools) > 0 {
+			openaiReq["tools"] = openaiTools
+		}
+	}
+
+	// 转换 tool_choice
+	if toolChoice := reqData["tool_choice"]; toolChoice != nil {
+		openaiReq["tool_choice"] = convertClaudeToolChoiceToOpenAI(toolChoice)
 	}
 
 	// 转换其他参数
@@ -113,6 +149,12 @@ func (a *ClaudeToOpenAIAdapter) AdaptRequest(reqData map[string]interface{}, mod
 	// 处理流式参数
 	if stream, ok := reqData["stream"]; ok {
 		openaiReq["stream"] = stream
+		// 启用 usage 统计
+		if streamBool, ok := stream.(bool); ok && streamBool {
+			openaiReq["stream_options"] = map[string]interface{}{
+				"include_usage": true,
+			}
+		}
 	}
 
 	// 处理 stop sequences
@@ -123,9 +165,344 @@ func (a *ClaudeToOpenAIAdapter) AdaptRequest(reqData map[string]interface{}, mod
 	// 注意：不要转发以下 Claude 特有的字段，因为 OpenAI API 不支持：
 	// - metadata (Claude 特有)
 	// - anthropic_version (Claude 特有)
-	// - system (应该合并到 messages 中)
+	// - system (已经合并到 messages 中)
+	// - cache_control (Claude Code 特有，忽略)
 
 	return openaiReq, nil
+}
+
+// convertClaudeSystemToString 将 Claude system 参数转换为字符串
+// 支持字符串格式和数组格式（Claude Code 带 cache_control）
+func convertClaudeSystemToString(system interface{}) string {
+	if system == nil {
+		return ""
+	}
+
+	switch sys := system.(type) {
+	case string:
+		return sys
+	case []interface{}:
+		// Claude Code 的 system 数组格式
+		// [{"type": "text", "text": "...", "cache_control": {"type": "ephemeral"}}]
+		var textParts []string
+		for _, block := range sys {
+			if blockMap, ok := block.(map[string]interface{}); ok {
+				if blockType, ok := blockMap["type"].(string); ok && blockType == "text" {
+					if text, ok := blockMap["text"].(string); ok {
+						textParts = append(textParts, text)
+					}
+				}
+			}
+		}
+		return strings.Join(textParts, "\n\n")
+	default:
+		return fmt.Sprintf("%v", sys)
+	}
+}
+
+// convertClaudeUserMessage 转换包含 tool_result 的用户消息
+func convertClaudeUserMessage(contentArr []interface{}) []interface{} {
+	result := make([]interface{}, 0)
+	var textParts []string
+
+	for _, block := range contentArr {
+		blockMap, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		blockType, _ := blockMap["type"].(string)
+
+		switch blockType {
+		case "tool_result":
+			// 转换为 OpenAI 的 tool 角色消息
+			toolUseID, _ := blockMap["tool_use_id"].(string)
+			content := extractClaudeToolResultContent(blockMap["content"])
+
+			result = append(result, map[string]interface{}{
+				"role":         "tool",
+				"tool_call_id": toolUseID,
+				"content":      content,
+			})
+
+		case "text":
+			if text, ok := blockMap["text"].(string); ok && text != "" {
+				textParts = append(textParts, text)
+			}
+		}
+	}
+
+	// 如果有文本内容，添加为用户消息
+	if len(textParts) > 0 {
+		result = append(result, map[string]interface{}{
+			"role":    "user",
+			"content": strings.Join(textParts, "\n"),
+		})
+	}
+
+	return result
+}
+
+// convertClaudeAssistantMessage 转换包含 tool_use 的助手消息
+func convertClaudeAssistantMessage(contentArr []interface{}) map[string]interface{} {
+	assistantMsg := map[string]interface{}{
+		"role": "assistant",
+	}
+
+	var textParts []string
+	var toolCalls []interface{}
+
+	for _, block := range contentArr {
+		blockMap, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		blockType, _ := blockMap["type"].(string)
+
+		switch blockType {
+		case "tool_use":
+			// 转换为 OpenAI 的 tool_calls 格式
+			id, _ := blockMap["id"].(string)
+			name, _ := blockMap["name"].(string)
+			input := blockMap["input"]
+
+			// 将 input 转为 JSON 字符串
+			var arguments string
+			if input != nil {
+				if inputBytes, err := json.Marshal(input); err == nil {
+					arguments = string(inputBytes)
+				}
+			}
+
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"id":   id,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      name,
+					"arguments": arguments,
+				},
+			})
+
+		case "text":
+			if text, ok := blockMap["text"].(string); ok && text != "" {
+				textParts = append(textParts, text)
+			}
+		}
+	}
+
+	if len(textParts) > 0 {
+		assistantMsg["content"] = strings.Join(textParts, "\n")
+	}
+
+	if len(toolCalls) > 0 {
+		assistantMsg["tool_calls"] = toolCalls
+	}
+
+	return assistantMsg
+}
+
+// extractClaudeToolResultContent 提取 tool_result 的内容
+func extractClaudeToolResultContent(content interface{}) string {
+	if content == nil {
+		return "(empty result)"
+	}
+
+	switch c := content.(type) {
+	case string:
+		if c == "" {
+			return "(empty result)"
+		}
+		return c
+	case []interface{}:
+		var parts []string
+		for _, item := range c {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				if itemMap["type"] == "text" {
+					if text, ok := itemMap["text"].(string); ok {
+						parts = append(parts, text)
+					}
+				} else {
+					// 其他类型序列化为 JSON
+					if jsonBytes, err := json.Marshal(itemMap); err == nil {
+						parts = append(parts, string(jsonBytes))
+					}
+				}
+			} else if str, ok := item.(string); ok {
+				parts = append(parts, str)
+			}
+		}
+		result := strings.Join(parts, "\n")
+		if result == "" {
+			return "(empty result)"
+		}
+		return result
+	case map[string]interface{}:
+		if c["type"] == "text" {
+			if text, ok := c["text"].(string); ok {
+				return text
+			}
+		}
+		if jsonBytes, err := json.Marshal(c); err == nil {
+			return string(jsonBytes)
+		}
+	}
+
+	return fmt.Sprintf("%v", content)
+}
+
+// convertClaudeToolsToOpenAI 将 Claude 工具定义转换为 OpenAI 格式
+func convertClaudeToolsToOpenAI(tools []interface{}) []interface{} {
+	openaiTools := make([]interface{}, 0, len(tools))
+
+	for _, tool := range tools {
+		toolMap, ok := tool.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		name, _ := toolMap["name"].(string)
+		description, _ := toolMap["description"].(string)
+		inputSchema := toolMap["input_schema"]
+
+		// 清理 JSON Schema
+		cleanedSchema := sanitizeClaudeJSONSchema(inputSchema)
+
+		openaiTools = append(openaiTools, map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        name,
+				"description": description,
+				"parameters":  cleanedSchema,
+			},
+		})
+	}
+
+	return openaiTools
+}
+
+// convertClaudeToolChoiceToOpenAI 将 Claude tool_choice 转换为 OpenAI 格式
+func convertClaudeToolChoiceToOpenAI(toolChoice interface{}) interface{} {
+	switch tc := toolChoice.(type) {
+	case string:
+		return tc
+	case map[string]interface{}:
+		if tcType, ok := tc["type"].(string); ok {
+			switch tcType {
+			case "auto":
+				return "auto"
+			case "any":
+				return "required"
+			case "tool":
+				if name, ok := tc["name"].(string); ok {
+					return map[string]interface{}{
+						"type": "function",
+						"function": map[string]interface{}{
+							"name": name,
+						},
+					}
+				}
+			}
+		}
+		// 可能已经是 OpenAI 格式
+		if tc["type"] == "function" {
+			return tc
+		}
+	}
+	return "auto"
+}
+
+// sanitizeClaudeJSONSchema 清理 JSON Schema，移除不支持的字段
+func sanitizeClaudeJSONSchema(schema interface{}) interface{} {
+	if schema == nil {
+		return map[string]interface{}{}
+	}
+
+	schemaMap, ok := schema.(map[string]interface{})
+	if !ok {
+		return schema
+	}
+
+	// 需要跳过的字段
+	skipFields := map[string]bool{
+		"additionalProperties": true,
+		"$schema":              true,
+		"title":                true,
+		"default":              true,
+	}
+
+	result := make(map[string]interface{})
+
+	for key, value := range schemaMap {
+		// 跳过空的 required 数组
+		if key == "required" {
+			if arr, ok := value.([]interface{}); ok && len(arr) == 0 {
+				continue
+			}
+		}
+
+		// 跳过不支持的字段
+		if skipFields[key] {
+			continue
+		}
+
+		// 处理 anyOf - 简化为第一个非 null 选项
+		if key == "anyOf" {
+			if anyOfArr, ok := value.([]interface{}); ok {
+				for _, option := range anyOfArr {
+					if optionMap, ok := option.(map[string]interface{}); ok {
+						// 跳过 null 类型和 not 约束
+						if optionMap["type"] == "null" {
+							continue
+						}
+						if _, hasNot := optionMap["not"]; hasNot {
+							continue
+						}
+						// 使用第一个有效选项
+						sanitized := sanitizeClaudeJSONSchema(optionMap)
+						if sanitizedMap, ok := sanitized.(map[string]interface{}); ok {
+							for k, v := range sanitizedMap {
+								result[k] = v
+							}
+						}
+						break
+					}
+				}
+				continue
+			}
+		}
+
+		// 递归处理嵌套对象
+		if key == "properties" {
+			if propsMap, ok := value.(map[string]interface{}); ok {
+				sanitizedProps := make(map[string]interface{})
+				for propName, propValue := range propsMap {
+					sanitizedProps[propName] = sanitizeClaudeJSONSchema(propValue)
+				}
+				result[key] = sanitizedProps
+				continue
+			}
+		}
+
+		// 递归处理其他嵌套对象
+		if valueMap, ok := value.(map[string]interface{}); ok {
+			result[key] = sanitizeClaudeJSONSchema(valueMap)
+		} else if valueArr, ok := value.([]interface{}); ok {
+			sanitizedArr := make([]interface{}, len(valueArr))
+			for i, item := range valueArr {
+				if itemMap, ok := item.(map[string]interface{}); ok {
+					sanitizedArr[i] = sanitizeClaudeJSONSchema(itemMap)
+				} else {
+					sanitizedArr[i] = item
+				}
+			}
+			result[key] = sanitizedArr
+		} else {
+			result[key] = value
+		}
+	}
+
+	return result
 }
 
 // AdaptResponse 将 OpenAI 响应转换为 Claude 响应（不需要，因为 Claude 接口直接返回 OpenAI 响应）

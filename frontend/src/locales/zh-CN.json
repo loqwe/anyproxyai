@@ -80,6 +80,8 @@
     "anthropicPath": "Anthropic 接口路径",
     "geminiInterface": "Gemini API",
     "geminiPath": "Gemini 生成接口路径",
+    "cursorInterface": "Cursor IDE 接口（OpenAI）",
+    "cursorPath": "Cursor IDE 接口路径（自动检测格式）",
     "setRedirectSuccess": "已设置为重定向目标",
     "setRedirectFailed": "设置重定向目标失败",
     "redirectTarget": "重定向目标"
@@ -131,7 +133,14 @@
     "tokens": "Token",
     "requestCount": "请求",
     "clearSuccess": "统计数据已清空",
-    "clearFailed": "清空失败"
+    "clearFailed": "清空失败",
+    "usageSummary": "用量汇总统计",
+    "weeklyUsage": "周用量",
+    "yearlyUsage": "年用量",
+    "totalUsage": "总用量",
+    "period": "周期",
+    "successCount": "成功",
+    "failCount": "失败"
   },
   "settings": {
     "title": "应用设置",
@@ -159,7 +168,14 @@
     "switchTheme": "切换主题",
     "languageSettings": "语言设置",
     "language": "界面语言",
-    "languageDesc": "选择界面显示语言，首次启动跟随系统语言"
+    "languageDesc": "选择界面显示语言，首次启动跟随系统语言",
+    "databaseManagement": "数据库管理",
+    "compressDatabase": "压缩数据库",
+    "compressDatabaseDesc": "将历史请求日志按小时聚合，删除超过366天的数据，释放存储空间",
+    "compressing": "压缩中...",
+    "compressSuccess": "数据库压缩完成",
+    "compressFailed": "数据库压缩失败",
+    "compressResult": "压缩前记录数: {before}，压缩后记录数: {after}，删除日志: {deleted}，小时统计: {hourly}"
   },
   "clearDialog": {
     "title": "确认清空数据",

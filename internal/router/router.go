@@ -130,6 +130,44 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 		// 需要创建子路由组来处理 /api/anthropic/* 的所有路径
 		anthropic := api.Group("/anthropic")
 		{
+			// 列出可用模型 - Anthropic 格式
+			anthropic.GET("/v1/models", func(c *gin.Context) {
+				var models []string
+				var err error
+
+				if cfg.RedirectEnabled && cfg.RedirectKeyword != "" {
+					models, err = routeService.GetAvailableModelsWithRedirect(cfg.RedirectKeyword)
+				} else {
+					models, err = routeService.GetAvailableModels()
+				}
+
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error": gin.H{
+							"message": err.Error(),
+							"type":    "internal_error",
+						},
+					})
+					return
+				}
+
+				// Anthropic 格式的模型列表
+				modelsData := make([]gin.H, len(models))
+				for i, model := range models {
+					modelsData[i] = gin.H{
+						"id":           model,
+						"type":         "model",
+						"display_name": model,
+						"created_at":   "2024-01-01T00:00:00Z",
+					}
+				}
+
+				c.JSON(http.StatusOK, gin.H{
+					"data":     modelsData,
+					"has_more": false,
+				})
+			})
+
 			anthropic.POST("/v1/messages", func(c *gin.Context) {
 				// 读取请求体
 				body, err := io.ReadAll(c.Request.Body)
@@ -204,6 +242,44 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 		// 始终将请求转换为 OpenAI 格式，响应转换回 Claude 格式
 		claudecode := api.Group("/claudecode")
 		{
+			// 列出可用模型 - Anthropic 格式
+			claudecode.GET("/v1/models", func(c *gin.Context) {
+				var models []string
+				var err error
+
+				if cfg.RedirectEnabled && cfg.RedirectKeyword != "" {
+					models, err = routeService.GetAvailableModelsWithRedirect(cfg.RedirectKeyword)
+				} else {
+					models, err = routeService.GetAvailableModels()
+				}
+
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error": gin.H{
+							"message": err.Error(),
+							"type":    "internal_error",
+						},
+					})
+					return
+				}
+
+				// Anthropic 格式的模型列表
+				modelsData := make([]gin.H, len(models))
+				for i, model := range models {
+					modelsData[i] = gin.H{
+						"id":           model,
+						"type":         "model",
+						"display_name": model,
+						"created_at":   "2024-01-01T00:00:00Z",
+					}
+				}
+
+				c.JSON(http.StatusOK, gin.H{
+					"data":     modelsData,
+					"has_more": false,
+				})
+			})
+
 			claudecode.POST("/v1/messages", func(c *gin.Context) {
 				// 读取请求体
 				body, err := io.ReadAll(c.Request.Body)
@@ -273,11 +349,163 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 			})
 		}
 
+		// Cursor IDE 专用接口 - 使用 /api/cursor 路径
+		// Cursor 使用 OpenAI 兼容接口但 tools 和 messages 格式类似 Anthropic/Claude
+		// 自动检测并转换 Cursor 格式为标准 OpenAI 格式
+		cursor := api.Group("/cursor")
+		{
+			// 列出可用模型 - OpenAI 格式
+			cursor.GET("/v1/models", func(c *gin.Context) {
+				var models []string
+				var err error
+
+				if cfg.RedirectEnabled && cfg.RedirectKeyword != "" {
+					models, err = routeService.GetAvailableModelsWithRedirect(cfg.RedirectKeyword)
+				} else {
+					models, err = routeService.GetAvailableModels()
+				}
+
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error": gin.H{
+							"message": err.Error(),
+							"type":    "internal_error",
+						},
+					})
+					return
+				}
+
+				modelsData := make([]gin.H, len(models))
+				for i, model := range models {
+					modelsData[i] = gin.H{
+						"id":       model,
+						"object":   "model",
+						"created":  1677610602,
+						"owned_by": "openai-router",
+					}
+				}
+
+				c.JSON(http.StatusOK, gin.H{
+					"object": "list",
+					"data":   modelsData,
+				})
+			})
+
+			// Cursor 聊天补全接口
+			cursor.POST("/v1/chat/completions", func(c *gin.Context) {
+				// 读取请求体
+				body, err := io.ReadAll(c.Request.Body)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error": gin.H{
+							"message": "Failed to read request body",
+							"type":    "invalid_request_error",
+						},
+					})
+					return
+				}
+
+				// 提取请求头
+				headers := make(map[string]string)
+				for key, values := range c.Request.Header {
+					if len(values) > 0 {
+						headers[key] = values[0]
+					}
+				}
+
+				// 检查是否是流式请求
+				var reqData map[string]interface{}
+				if err := json.Unmarshal(body, &reqData); err == nil {
+					if stream, ok := reqData["stream"].(bool); ok && stream {
+						// 流式请求
+						c.Header("Content-Type", "text/event-stream")
+						c.Header("Cache-Control", "no-cache")
+						c.Header("Connection", "keep-alive")
+						c.Header("X-Accel-Buffering", "no")
+
+						flusher, ok := c.Writer.(http.Flusher)
+						if !ok {
+							log.Errorf("Streaming not supported")
+							c.JSON(http.StatusInternalServerError, gin.H{
+								"error": gin.H{
+									"message": "Streaming not supported",
+									"type":    "internal_error",
+								},
+							})
+							return
+						}
+
+						// 使用 Cursor 专用流式处理
+						err := proxyService.ProxyCursorStreamRequest(body, headers, c.Writer, flusher)
+						if err != nil {
+							log.Errorf("Cursor stream proxy error: %v", err)
+						}
+						return
+					}
+				}
+
+				// 非流式请求
+				respBody, statusCode, err := proxyService.ProxyCursorRequest(body, headers)
+				if err != nil {
+					c.JSON(statusCode, gin.H{
+						"error": gin.H{
+							"message": err.Error(),
+							"type":    "proxy_error",
+						},
+					})
+					return
+				}
+
+				c.Data(statusCode, "application/json", respBody)
+			})
+		}
+
 		// Gemini 专用接口 - 支持 Google 官方 API 格式
 		// 路径格式: /api/gemini/v1beta/models/{model}:generateContent
 		// 或: /api/gemini/v1beta/models/{model}:streamGenerateContent
 		gemini := api.Group("/gemini")
 		{
+			// 列出可用模型 - Gemini 格式
+			gemini.GET("/models", func(c *gin.Context) {
+				// 获取包含重定向关键字的模型列表
+				var models []string
+				var err error
+
+				if cfg.RedirectEnabled && cfg.RedirectKeyword != "" {
+					models, err = routeService.GetAvailableModelsWithRedirect(cfg.RedirectKeyword)
+				} else {
+					models, err = routeService.GetAvailableModels()
+				}
+
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error": gin.H{
+							"message": err.Error(),
+							"type":    "internal_error",
+						},
+					})
+					return
+				}
+
+				// Gemini 格式的模型列表
+				modelsData := make([]gin.H, len(models))
+				for i, model := range models {
+					modelsData[i] = gin.H{
+						"name":                       "models/" + model,
+						"version":                    "001",
+						"displayName":                model,
+						"description":                "Model " + model,
+						"inputTokenLimit":            1048576,
+						"outputTokenLimit":           8192,
+						"supportedGenerationMethods": []string{"generateContent", "streamGenerateContent"},
+					}
+				}
+
+				c.JSON(http.StatusOK, gin.H{
+					"models": modelsData,
+				})
+			})
+
 			// Gemini 流式生成接口
 			gemini.POST("/completions", func(c *gin.Context) {
 				// 读取请求体
@@ -321,16 +549,17 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 							return
 						}
 
-						err := proxyService.ProxyStreamRequest(body, headers, c.Writer, flusher)
+						// 使用 Gemini 专用流式处理，响应会转换为 Gemini 格式
+						err := proxyService.ProxyGeminiStreamRequest(body, headers, c.Writer, flusher)
 						if err != nil {
-							log.Errorf("Stream proxy error: %v", err)
+							log.Errorf("Gemini stream proxy error: %v", err)
 						}
 						return
 					}
 				}
 
-				// 非流式请求
-				respBody, statusCode, err := proxyService.ProxyRequest(body, headers)
+				// 非流式请求 - 使用 Gemini 专用处理，响应会转换为 Gemini 格式
+				respBody, statusCode, err := proxyService.ProxyGeminiRequest(body, headers)
 				if err != nil {
 					c.JSON(statusCode, gin.H{
 						"error": gin.H{
@@ -395,15 +624,16 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 						return
 					}
 
-					err := proxyService.ProxyStreamRequest(body, headers, c.Writer, flusher)
+					// 使用 Gemini 专用流式处理
+					err := proxyService.ProxyGeminiStreamRequest(body, headers, c.Writer, flusher)
 					if err != nil {
-						log.Errorf("Stream proxy error: %v", err)
+						log.Errorf("Gemini stream proxy error: %v", err)
 					}
 					return
 				}
 
-				// 非流式请求
-				respBody, statusCode, err := proxyService.ProxyRequest(body, headers)
+				// 非流式请求 - 使用 Gemini 专用处理
+				respBody, statusCode, err := proxyService.ProxyGeminiRequest(body, headers)
 				if err != nil {
 					c.JSON(statusCode, gin.H{
 						"error": gin.H{
@@ -467,15 +697,16 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 						return
 					}
 
-					err := proxyService.ProxyStreamRequest(body, headers, c.Writer, flusher)
+					// 使用 Gemini 专用流式处理
+					err := proxyService.ProxyGeminiStreamRequest(body, headers, c.Writer, flusher)
 					if err != nil {
-						log.Errorf("Stream proxy error: %v", err)
+						log.Errorf("Gemini stream proxy error: %v", err)
 					}
 					return
 				}
 
-				// 非流式请求
-				respBody, statusCode, err := proxyService.ProxyRequest(body, headers)
+				// 非流式请求 - 使用 Gemini 专用处理
+				respBody, statusCode, err := proxyService.ProxyGeminiRequest(body, headers)
 				if err != nil {
 					c.JSON(statusCode, gin.H{
 						"error": gin.H{
@@ -611,6 +842,47 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 			// 路径: /api/v1/gemini/models/{model}:streamGenerateContent
 			geminiV1 := v1.Group("/gemini")
 			{
+				// 列出可用模型 - Gemini 格式
+				geminiV1.GET("/models", func(c *gin.Context) {
+					// 获取包含重定向关键字的模型列表
+					var models []string
+					var err error
+
+					if cfg.RedirectEnabled && cfg.RedirectKeyword != "" {
+						models, err = routeService.GetAvailableModelsWithRedirect(cfg.RedirectKeyword)
+					} else {
+						models, err = routeService.GetAvailableModels()
+					}
+
+					if err != nil {
+						c.JSON(http.StatusInternalServerError, gin.H{
+							"error": gin.H{
+								"message": err.Error(),
+								"type":    "internal_error",
+							},
+						})
+						return
+					}
+
+					// Gemini 格式的模型列表
+					modelsData := make([]gin.H, len(models))
+					for i, model := range models {
+						modelsData[i] = gin.H{
+							"name":                       "models/" + model,
+							"version":                    "001",
+							"displayName":                model,
+							"description":                "Model " + model,
+							"inputTokenLimit":            1048576,
+							"outputTokenLimit":           8192,
+							"supportedGenerationMethods": []string{"generateContent", "streamGenerateContent"},
+						}
+					}
+
+					c.JSON(http.StatusOK, gin.H{
+						"models": modelsData,
+					})
+				})
+
 				// 使用通配符捕获整个路径
 				geminiV1.POST("/models/:modelAction", func(c *gin.Context) {
 					modelAction := c.Param("modelAction")

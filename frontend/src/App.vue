@@ -13,6 +13,7 @@
         <!-- Navigation Tabs -->
         <div style="display: flex; align-items: center; gap: 8px;">
           <n-button
+            size="small"
             :type="currentPage === 'home' ? 'primary' : 'default'"
             :ghost="currentPage !== 'home'"
             @click="currentPage = 'home'"
@@ -24,6 +25,7 @@
           </n-button>
 
           <n-button
+            size="small"
             :type="currentPage === 'models' ? 'primary' : 'default'"
             :ghost="currentPage !== 'models'"
             @click="currentPage = 'models'"
@@ -35,6 +37,7 @@
           </n-button>
 
           <n-button
+            size="small"
             :type="currentPage === 'stats' ? 'primary' : 'default'"
             :ghost="currentPage !== 'stats'"
             @click="currentPage = 'stats'"
@@ -47,7 +50,7 @@
         </div>
 
         <div style="display: flex; align-items: center; gap: 16px;">
-          <n-button quaternary circle @click="refreshAll" :loading="refreshing">
+          <n-button quaternary circle size="small" @click="refreshAll" :loading="refreshing">
             <template #icon>
               <n-icon :size="20">
                 <RefreshIcon />
@@ -55,7 +58,7 @@
             </template>
           </n-button>
 
-          <n-button quaternary circle @click="currentPage = 'settings'">
+          <n-button quaternary circle size="small" @click="currentPage = 'settings'">
             <template #icon>
               <n-icon :size="20">
                 <SettingsIcon />
@@ -63,7 +66,7 @@
             </template>
           </n-button>
 
-          <n-button quaternary circle @click="toggleTheme">
+          <n-button quaternary circle size="small" @click="toggleTheme">
             <template #icon>
               <n-icon>
                 <MoonIcon v-if="isDark" />
@@ -72,7 +75,7 @@
             </template>
           </n-button>
 
-          <n-button quaternary circle @click="showLanguageModal = true">
+          <n-button quaternary circle size="small" @click="showLanguageModal = true">
             <template #icon>
               <n-icon :size="20">
                 <LanguageIcon />
@@ -80,7 +83,7 @@
             </template>
           </n-button>
 
-          <n-button type="primary" @click="showAddModal = true">
+          <n-button type="primary" size="small" @click="showAddModal = true">
             <template #icon>
               <n-icon><AddIcon /></n-icon>
             </template>
@@ -192,10 +195,10 @@
                     <n-input
                       :value="config.localApiEndpoint + '/api'"
                       readonly
-                      size="large"
+                      size="small"
                     >
                       <template #suffix>
-                        <n-button text @click="copyToClipboard(config.localApiEndpoint + '/api')">
+                        <n-button text size="small" @click="copyToClipboard(config.localApiEndpoint + '/api')">
                           <template #icon>
                             <n-icon><CopyIcon /></n-icon>
                           </template>
@@ -212,15 +215,15 @@
                     <n-input
                       :value="maskApiKey(config.localApiKey)"
                       readonly
-                      size="large"
+                      size="small"
                     >
                       <template #suffix>
-                        <n-button text @click="copyToClipboard(config.localApiKey)">
+                        <n-button text size="small" @click="copyToClipboard(config.localApiKey)">
                           <template #icon>
                             <n-icon><CopyIcon /></n-icon>
                           </template>
                         </n-button>
-                        <n-button text @click="generateNewApiKey" style="margin-left: 8px;">
+                        <n-button text size="small" @click="generateNewApiKey" style="margin-left: 8px;">
                           <template #icon>
                             <n-icon><RefreshIcon /></n-icon>
                           </template>
@@ -242,10 +245,10 @@
                     <n-input
                       :value="config.localApiEndpoint + '/api/claudecode'"
                       readonly
-                      size="large"
+                      size="small"
                     >
                       <template #suffix>
-                        <n-button text @click="copyToClipboard(config.localApiEndpoint + '/api/claudecode')">
+                        <n-button text size="small" @click="copyToClipboard(config.localApiEndpoint + '/api/claudecode')">
                           <template #icon>
                             <n-icon><CopyIcon /></n-icon>
                           </template>
@@ -262,10 +265,10 @@
                     <n-input
                       :value="config.localApiEndpoint + '/api/anthropic'"
                       readonly
-                      size="large"
+                      size="small"
                     >
                       <template #suffix>
-                        <n-button text @click="copyToClipboard(config.localApiEndpoint + '/api/anthropic')">
+                        <n-button text size="small" @click="copyToClipboard(config.localApiEndpoint + '/api/anthropic')">
                           <template #icon>
                             <n-icon><CopyIcon /></n-icon>
                           </template>
@@ -282,10 +285,10 @@
                     <n-input
                       :value="config.localApiEndpoint + '/api/gemini'"
                       readonly
-                      size="large"
+                      size="small"
                     >
                       <template #suffix>
-                        <n-button text @click="copyToClipboard(config.localApiEndpoint + '/api/gemini')">
+                        <n-button text size="small" @click="copyToClipboard(config.localApiEndpoint + '/api/gemini')">
                           <template #icon>
                             <n-icon><CopyIcon /></n-icon>
                           </template>
@@ -294,6 +297,26 @@
                     </n-input>
                     <n-text depth="3" style="font-size: 11px; margin-top: 4px; display: block; color: #18a058;">
                       📝 {{ t('home.geminiPath') }}：{{ config.localApiEndpoint }}/api/gemini/completions
+                    </n-text>
+                  </div>
+
+                  <div>
+                    <n-text depth="2" style="font-size: 13px; margin-bottom: 4px; display: block;">{{ t('home.cursorInterface') }}</n-text>
+                    <n-input
+                      :value="config.localApiEndpoint + '/api/cursor/v1'"
+                      readonly
+                      size="small"
+                    >
+                      <template #suffix>
+                        <n-button text size="small" @click="copyToClipboard(config.localApiEndpoint + '/api/cursor/v1')">
+                          <template #icon>
+                            <n-icon><CopyIcon /></n-icon>
+                          </template>
+                        </n-button>
+                      </template>
+                    </n-input>
+                    <n-text depth="3" style="font-size: 11px; margin-top: 4px; display: block; color: #18a058;">
+                      📝 {{ t('home.cursorPath') }}：{{ config.localApiEndpoint }}/api/cursor/v1/chat/completions
                     </n-text>
                   </div>
                 </n-space>
@@ -307,19 +330,19 @@
           <n-card :title="'📋 ' + t('models.title')" :bordered="false">
             <template #header-extra>
               <n-space>
-                <n-button @click="exportRoutes" type="primary" ghost>
+                <n-button @click="exportRoutes" type="primary" ghost size="small">
                   <template #icon>
                     <n-icon><ArrowForwardIcon style="transform: rotate(-90deg);" /></n-icon>
                   </template>
                   {{ t('models.exportJson') }}
                 </n-button>
-                <n-button @click="triggerImport" type="primary" ghost>
+                <n-button @click="triggerImport" type="primary" ghost size="small">
                   <template #icon>
                     <n-icon><ArrowForwardIcon style="transform: rotate(90deg);" /></n-icon>
                   </template>
                   {{ t('models.importJson') }}
                 </n-button>
-                <n-button @click="loadRoutes" quaternary circle>
+                <n-button @click="loadRoutes" quaternary circle size="small">
                   <template #icon>
                     <n-icon><RefreshIcon /></n-icon>
                   </template>
@@ -369,12 +392,25 @@
             <!-- 今日消耗统计卡片 -->
             <n-card :title="'📊 ' + t('stats.todayStats')" :bordered="false">
               <template #header-extra>
-                <n-button type="error" quaternary @click="showClearStatsDialog">
-                  <template #icon>
-                    <n-icon><TrashIcon /></n-icon>
-                  </template>
-                  {{ t('stats.clearData') }}
-                </n-button>
+                <n-space>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button type="warning" quaternary size="small" @click="compressDatabase" :loading="compressing" :disabled="compressing">
+                        <template #icon>
+                          <n-icon><ArchiveIcon /></n-icon>
+                        </template>
+                        {{ compressing ? t('settings.compressing') : t('settings.compressDatabase') }}
+                      </n-button>
+                    </template>
+                    {{ t('settings.compressDatabaseDesc') }}
+                  </n-tooltip>
+                  <n-button type="error" quaternary size="small" @click="showClearStatsDialog">
+                    <template #icon>
+                      <n-icon><TrashIcon /></n-icon>
+                    </template>
+                    {{ t('stats.clearData') }}
+                  </n-button>
+                </n-space>
               </template>
               <n-grid :cols="4" :x-gap="16">
                 <n-grid-item>
@@ -474,7 +510,57 @@
                 :pagination="false"
                 :bordered="false"
                 striped
+                size="small"
               />
+            </n-card>
+
+            <!-- 用量汇总统计 -->
+            <n-card :title="'📊 ' + t('stats.usageSummary')" :bordered="false">
+              <n-grid :cols="3" :x-gap="16" :y-gap="16">
+                <!-- 周用量 -->
+                <n-grid-item>
+                  <n-card :title="t('stats.weeklyUsage')" size="small" :bordered="true">
+                    <n-data-table
+                      :columns="weeklyColumns"
+                      :data="usageSummary.week_stats || []"
+                      :pagination="false"
+                      :bordered="false"
+                      size="small"
+                      :max-height="200"
+                    />
+                  </n-card>
+                </n-grid-item>
+
+                <!-- 年用量 -->
+                <n-grid-item>
+                  <n-card :title="t('stats.yearlyUsage')" size="small" :bordered="true">
+                    <n-data-table
+                      :columns="yearlyColumns"
+                      :data="usageSummary.year_stats || []"
+                      :pagination="false"
+                      :bordered="false"
+                      size="small"
+                      :max-height="200"
+                    />
+                  </n-card>
+                </n-grid-item>
+
+                <!-- 总用量 -->
+                <n-grid-item>
+                  <n-card :title="t('stats.totalUsage')" size="small" :bordered="true">
+                    <n-space vertical :size="8">
+                      <n-statistic :label="t('stats.totalRequests')" :value="usageSummary.total_stats?.request_count || 0" />
+                      <n-statistic :label="t('stats.totalTokensCol')" :value="formatNumber(usageSummary.total_stats?.total_tokens || 0)" />
+                      <n-statistic :label="t('stats.inputTokens')" :value="formatNumber(usageSummary.total_stats?.request_tokens || 0)" />
+                      <n-statistic :label="t('stats.outputTokens')" :value="formatNumber(usageSummary.total_stats?.response_tokens || 0)" />
+                      <n-space>
+                        <n-tag type="success" size="small">{{ t('stats.successCount') }}: {{ usageSummary.total_stats?.success_count || 0 }}</n-tag>
+                        <n-tag type="error" size="small">{{ t('stats.failCount') }}: {{ usageSummary.total_stats?.fail_count || 0 }}</n-tag>
+                      </n-space>
+                    </n-space>
+                  </n-card>
+                </n-grid-item>
+              </n-grid>
             </n-card>
           </n-space>
         </div>
@@ -490,14 +576,14 @@
                   <n-space align="center">
                     <n-icon size="20"><LogoGithubIcon /></n-icon>
                     <n-text>{{ t('settings.githubRepo') }}:</n-text>
-                    <n-button text type="primary" tag="a" href="https://github.com/cniu6/anyproxyai" target="_blank">
+                    <n-button text type="primary" size="small" tag="a" href="https://github.com/cniu6/anyproxyai" target="_blank">
                       github.com/cniu6/anyproxyai
                     </n-button>
                   </n-space>
 
                   <n-space align="center">
                     <n-icon size="20"><InformationCircleIcon /></n-icon>
-                    <n-text>{{ t('settings.version') }}: v2.0.4</n-text>
+                    <n-text>{{ t('settings.version') }}: v2.0.5</n-text>
                   </n-space>
 
                   <n-space align="center">
@@ -598,10 +684,10 @@
                 <n-text strong style="font-size: 16px;">{{ t('settings.themeSettings') }}</n-text>
                 <n-space align="center" style="margin-top: 12px;">
                   <n-text>{{ t('settings.currentTheme') }}:</n-text>
-                  <n-tag :type="isDark ? 'info' : 'warning'">
+                  <n-tag :type="isDark ? 'info' : 'warning'" size="small">
                     {{ isDark ? t('settings.darkMode') : t('settings.lightMode') }}
                   </n-tag>
-                  <n-button @click="toggleTheme">
+                  <n-button size="small" @click="toggleTheme">
                     <template #icon>
                       <n-icon>
                         <MoonIcon v-if="!isDark" />
@@ -741,6 +827,7 @@ import {
   Link as LinkIcon,
   Trash as TrashIcon,
   Language as LanguageIcon,
+  Archive as ArchiveIcon,
 } from '@vicons/ionicons5'
 import AddRouteModal from './components/AddRouteModal.vue'
 import EditRouteModal from './components/EditRouteModal.vue'
@@ -781,6 +868,7 @@ const switchLanguage = (lang) => {
 // Page State
 const currentPage = ref('home') // 'home' | 'models' | 'stats' | 'settings'
 const refreshing = ref(false)
+const compressing = ref(false)
 
 // Theme
 const isDark = ref(true)
@@ -805,7 +893,8 @@ const refreshAll = async () => {
       loadConfig(),
       loadDailyStats(),
       loadHourlyStats(),
-      loadModelRanking()
+      loadModelRanking(),
+      loadUsageSummary()
     ])
     showMessage("success", t('messages.dataRefreshed'))
   } catch (error) {
@@ -920,6 +1009,32 @@ const toggleEnableFileLog = async (enabled) => {
   } catch (error) {
     showMessage("error", t('messages.settingFailed') + ': ' + error)
     settings.value.enableFileLog = !enabled // 恢复状态
+  }
+}
+
+// 压缩数据库
+const compressDatabase = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  compressing.value = true
+  try {
+    const result = await window.go.main.App.CompressDatabase()
+    const message = t('settings.compressResult', {
+      before: result.before_count || 0,
+      after: result.after_count || 0,
+      deleted: result.deleted_logs || 0,
+      hourly: result.hourly_stats_count || 0
+    })
+    showMessage("success", t('settings.compressSuccess') + ' - ' + message)
+    // 刷新统计数据
+    await loadStats()
+    await loadDailyStats()
+  } catch (error) {
+    showMessage("error", t('settings.compressFailed') + ': ' + error)
+  } finally {
+    compressing.value = false
   }
 }
 
@@ -1169,13 +1284,20 @@ const todayChartOption = computed(() => {
 // 接口使用排行数据
 const modelRankingData = ref([])
 
+// 用量汇总数据
+const usageSummary = ref({
+  week_stats: [],
+  year_stats: [],
+  total_stats: {}
+})
+
 const rankingColumns = computed(() => [
   { title: t('stats.rank'), key: 'rank', width: 80 },
   {
     title: t('stats.model'),
     key: 'model',
     render(row) {
-      return h(NTag, { type: 'info' }, { default: () => row.model })
+      return h(NTag, { type: 'info', size: 'small' }, { default: () => row.model })
     }
   },
   { title: t('stats.requests'), key: 'requests' },
@@ -1191,6 +1313,32 @@ const rankingColumns = computed(() => [
     key: 'success_rate',
     render(row) {
       return `${row.success_rate || 0}%`
+    }
+  },
+])
+
+// 周用量表格列
+const weeklyColumns = computed(() => [
+  { title: t('stats.period'), key: 'period', width: 100 },
+  { title: t('stats.requests'), key: 'request_count', width: 80 },
+  {
+    title: t('stats.totalTokensCol'),
+    key: 'total_tokens',
+    render(row) {
+      return formatNumber(row.total_tokens || 0)
+    }
+  },
+])
+
+// 年用量表格列
+const yearlyColumns = computed(() => [
+  { title: t('stats.period'), key: 'period', width: 80 },
+  { title: t('stats.requests'), key: 'request_count', width: 80 },
+  {
+    title: t('stats.totalTokensCol'),
+    key: 'total_tokens',
+    render(row) {
+      return formatNumber(row.total_tokens || 0)
     }
   },
 ])
@@ -1362,9 +1510,9 @@ const modelsPageColumns = computed(() => [
     key: 'model',
     width: 200,
     render(row) {
-      return h(NSpace, { align: 'center' }, {
+      return h(NSpace, { align: 'center', size: 'small' }, {
         default: () => [
-          h(NTag, { type: 'info' }, { default: () => row.model }),
+          h(NTag, { type: 'info', size: 'small' }, { default: () => row.model }),
           // 如果是当前重定向目标，通过路由ID精确匹配（避免同ID跨分组显示问题）
           (redirectConfig.value.targetRouteId === row.id || 
            (redirectConfig.value.targetRouteId === 0 && redirectConfig.value.targetModel === row.model))
@@ -1386,7 +1534,7 @@ const modelsPageColumns = computed(() => [
     key: 'actions',
     width: 280,
     render(row) {
-      return h(NSpace, {}, {
+      return h(NSpace, { size: 'small' }, {
         default: () => [
           h(
             NButton,
@@ -1394,7 +1542,7 @@ const modelsPageColumns = computed(() => [
               size: 'small',
               onClick: () => handleEdit(row),
             },
-            { default: () => t('models.edit'), icon: () => h(NIcon, {}, { default: () => h(EditIcon) }) }
+            { default: () => t('models.edit'), icon: () => h(NIcon, { size: 14 }, { default: () => h(EditIcon) }) }
           ),
           h(
             NButton,
@@ -1403,7 +1551,7 @@ const modelsPageColumns = computed(() => [
               type: 'error',
               onClick: () => handleDelete(row),
             },
-            { default: () => t('models.delete'), icon: () => h(NIcon, {}, { default: () => h(DeleteIcon) }) }
+            { default: () => t('models.delete'), icon: () => h(NIcon, { size: 14 }, { default: () => h(DeleteIcon) }) }
           ),
           h(
             NButton,
@@ -1412,7 +1560,7 @@ const modelsPageColumns = computed(() => [
               type: 'primary',
               onClick: () => setAsRedirect(row),
             },
-            { default: () => t('models.setAsTarget'), icon: () => h(NIcon, {}, { default: () => h(LinkIcon) }) }
+            { default: () => t('models.setAsTarget'), icon: () => h(NIcon, { size: 14 }, { default: () => h(LinkIcon) }) }
           ),
         ]
       })
@@ -1496,6 +1644,19 @@ const loadModelRanking = async () => {
     modelRankingData.value = data || []
   } catch (error) {
     console.error('加载模型排行失败:', error)
+  }
+}
+
+// 加载用量汇总
+const loadUsageSummary = async () => {
+  try {
+    if (!window.go || !window.go.main || !window.go.main.App) {
+      return
+    }
+    const data = await window.go.main.App.GetUsageSummary()
+    usageSummary.value = data || { week_stats: [], year_stats: [], total_stats: {} }
+  } catch (error) {
+    console.error('加载用量汇总失败:', error)
   }
 }
 
@@ -1764,6 +1925,7 @@ onMounted(async () => {
   loadDailyStats()
   loadHourlyStats()
   loadModelRanking()
+  loadUsageSummary()
 
   // 每 30 秒刷新一次统计
   setInterval(() => {
@@ -1775,6 +1937,7 @@ onMounted(async () => {
   setInterval(() => {
     loadDailyStats()
     loadModelRanking()
+    loadUsageSummary()
   }, 300000)
 })
 
@@ -1815,6 +1978,11 @@ watch(groupedRoutes, (newGroups) => {
   height: 0px !important;
   background: transparent !important;
   display: none !important;
+}
+
+/* 覆盖 Naive UI n-input 组件的 height */
+.n-input .n-input__input-el {
+  height: auto !important;
 }
 </style>
 

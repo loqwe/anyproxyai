@@ -87,6 +87,7 @@ AnyProxyAi is a universal AI API proxy router that supports multiple API formats
 | Claude (Anthropic) | ✅ | ✅ | ✅ | ✅ |
 | Gemini | ✅ | ✅ | ✅ | ✅ |
 | Claude Code | ✅ | ✅ | ✅ | ✅ |
+| Cursor IDE | ✅ | ✅ | ✅ | ✅ |
 
 ### UI Features
 
@@ -172,6 +173,14 @@ API Base URL: http://localhost:5642/api/gemini
 API Key: (use the key shown on home page, or any value if auth is disabled)
 ```
 
+**Cursor IDE:**
+```
+API Base URL: http://localhost:5642/api/cursor/v1
+API Key: (use the key shown on home page, or any value if auth is disabled)
+```
+
+> **Note about Cursor IDE**: Cursor uses OpenAI-compatible endpoints but with Anthropic/Claude-style tool definitions and message formats. AnyProxyAi automatically detects and converts Cursor's format to standard OpenAI format, so you can use any OpenAI-compatible backend with Cursor.
+
 > **Note**: The API Key shown on the home page is used for authentication. If you want to disable authentication, set `local_api_key` to empty string in `config.json`.
 
 #### 3. Use Proxy Redirect (Optional)
@@ -188,6 +197,7 @@ Enable redirect and set `proxy_auto` as your model name to automatically route t
                         │  ┌─────────────────────────────────────────────┐   │
                         │  │              API Router                      │   │
                         │  │  /api/v1/*        → OpenAI format           │   │
+                        │  │  /api/cursor/*    → Cursor IDE format       │   │
                         │  │  /api/anthropic/* → Claude format           │   │
                         │  │  /api/claudecode/*→ Claude Code format      │   │
                         │  │  /api/gemini/*    → Gemini format           │   │
@@ -199,6 +209,10 @@ Enable redirect and set `proxy_auto` as your model name to automatically route t
                         │  │  │ OpenAI   │ │ Claude   │ │ Gemini   │       │ │
                         │  │  │ Adapter  │ │ Adapter  │ │ Adapter  │       │ │
                         │  │  └──────────┘ └──────────┘ └──────────┘       │ │
+                        │  │  ┌──────────┐                                 │ │
+                        │  │  │ Cursor   │ (Auto-detect & convert)         │ │
+                        │  │  │ Adapter  │                                 │ │
+                        │  │  └──────────┘                                 │ │
                         │  └───────────────────────────────────────────────┘ │
                         │                        │                            │
                         │  ┌─────────────────────▼─────────────────────────┐ │
@@ -417,5 +431,5 @@ This project is open source under the [MIT License](LICENSE).
 ---
 
 <div align="center">
-Made with ❤️ and Claude AI
+Made with ❤️ and Claude AI From China
 </div>

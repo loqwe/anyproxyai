@@ -159,6 +159,7 @@ func (s *RouteService) ToggleRoute(id int64, enabled bool) error {
 }
 
 // GetStats 获取统计信息
+// 合并 hourly_stats（历史压缩数据）和 request_logs（实时数据）
 func (s *RouteService) GetStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 
@@ -178,21 +179,17 @@ func (s *RouteService) GetStats() (map[string]interface{}, error) {
 	}
 	stats["model_count"] = modelCount
 
-	// 总请求数
-	var totalRequests int
-	err = s.db.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&totalRequests)
-	if err != nil {
-		return nil, err
-	}
-	stats["total_requests"] = totalRequests
+	// 总请求数 = hourly_stats 中的历史数据 + request_logs 中的实时数据
+	var historyRequests, realtimeRequests int
+	s.db.QueryRow("SELECT COALESCE(SUM(request_count), 0) FROM hourly_stats").Scan(&historyRequests)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&realtimeRequests)
+	stats["total_requests"] = historyRequests + realtimeRequests
 
-	// 总Token使用量
-	var totalTokens int
-	err = s.db.QueryRow("SELECT COALESCE(SUM(total_tokens), 0) FROM request_logs").Scan(&totalTokens)
-	if err != nil {
-		return nil, err
-	}
-	stats["total_tokens"] = totalTokens
+	// 总Token使用量 = hourly_stats + request_logs
+	var historyTokens, realtimeTokens int
+	s.db.QueryRow("SELECT COALESCE(SUM(total_tokens), 0) FROM hourly_stats").Scan(&historyTokens)
+	s.db.QueryRow("SELECT COALESCE(SUM(total_tokens), 0) FROM request_logs").Scan(&realtimeTokens)
+	stats["total_tokens"] = historyTokens + realtimeTokens
 
 	// 今日请求数 - 直接比较日期字符串
 	var todayRequests int
@@ -216,21 +213,21 @@ func (s *RouteService) GetStats() (map[string]interface{}, error) {
 	}
 	stats["today_tokens"] = todayTokens
 
-	// 成功率
-	var successCount int
-	err = s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE success = 1").Scan(&successCount)
-	if err != nil {
-		return nil, err
-	}
+	// 成功率 = (历史成功 + 实时成功) / (历史总数 + 实时总数)
+	var historySuccess, realtimeSuccess int
+	s.db.QueryRow("SELECT COALESCE(SUM(success_count), 0) FROM hourly_stats").Scan(&historySuccess)
+	s.db.QueryRow("SELECT COUNT(*) FROM request_logs WHERE success = 1").Scan(&realtimeSuccess)
 
+	totalRequests := historyRequests + realtimeRequests
+	totalSuccess := historySuccess + realtimeSuccess
 	successRate := 0.0
 	if totalRequests > 0 {
-		successRate = float64(successCount) / float64(totalRequests) * 100
+		successRate = float64(totalSuccess) / float64(totalRequests) * 100
 	}
 	stats["success_rate"] = successRate
 
 	log.Infof("Stats loaded: today_requests=%d, today_tokens=%d, total_requests=%d, total_tokens=%d",
-		todayRequests, todayTokens, totalRequests, totalTokens)
+		todayRequests, todayTokens, totalRequests, historyTokens+realtimeTokens)
 
 	return stats, nil
 }
@@ -330,21 +327,43 @@ func (s *RouteService) GetTodayStats() (map[string]interface{}, error) {
 }
 
 // GetDailyStats 获取每日统计（用于热力图）
+// 从 hourly_stats（历史压缩数据）和 request_logs（今天的实时数据）合并读取
 func (s *RouteService) GetDailyStats(days int) ([]map[string]interface{}, error) {
+	// 使用 UNION ALL 合并历史压缩数据和今天的实时数据
 	query := `
-		SELECT
-			substr(created_at, 1, 10) as date,
-			COUNT(*) as requests,
-			COALESCE(SUM(request_tokens), 0) as request_tokens,
-			COALESCE(SUM(response_tokens), 0) as response_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens
-		FROM request_logs
-		WHERE substr(created_at, 1, 10) >= date('now', 'localtime', ?)
-		GROUP BY substr(created_at, 1, 10)
+		SELECT date, SUM(requests) as requests, SUM(request_tokens) as request_tokens, 
+		       SUM(response_tokens) as response_tokens, SUM(total_tokens) as total_tokens
+		FROM (
+			-- 从 hourly_stats 获取历史压缩数据
+			SELECT 
+				date,
+				SUM(request_count) as requests,
+				SUM(request_tokens) as request_tokens,
+				SUM(response_tokens) as response_tokens,
+				SUM(total_tokens) as total_tokens
+			FROM hourly_stats
+			WHERE date >= date('now', 'localtime', ?)
+			GROUP BY date
+			
+			UNION ALL
+			
+			-- 从 request_logs 获取今天的实时数据
+			SELECT
+				substr(created_at, 1, 10) as date,
+				COUNT(*) as requests,
+				COALESCE(SUM(request_tokens), 0) as request_tokens,
+				COALESCE(SUM(response_tokens), 0) as response_tokens,
+				COALESCE(SUM(total_tokens), 0) as total_tokens
+			FROM request_logs
+			WHERE substr(created_at, 1, 10) >= date('now', 'localtime', ?)
+			GROUP BY substr(created_at, 1, 10)
+		)
+		GROUP BY date
 		ORDER BY date
 	`
 
-	rows, err := s.db.Query(query, fmt.Sprintf("-%d days", days))
+	daysParam := fmt.Sprintf("-%d days", days)
+	rows, err := s.db.Query(query, daysParam, daysParam)
 	if err != nil {
 		log.Errorf("GetDailyStats query error: %v", err)
 		return nil, err
@@ -636,16 +655,44 @@ func (s *RouteService) IsRedirectModel(model string) bool {
 }
 
 // GetModelRanking 获取模型使用排行（排除重定向模型）
+// 合并 hourly_stats（历史压缩数据）和 request_logs（实时数据）
 func (s *RouteService) GetModelRanking(limit int) ([]map[string]interface{}, error) {
 	query := `
-		SELECT
+		SELECT 
 			model,
-			COUNT(*) as requests,
-			COALESCE(SUM(request_tokens), 0) as request_tokens,
-			COALESCE(SUM(response_tokens), 0) as response_tokens,
-			COALESCE(SUM(total_tokens), 0) as total_tokens,
-			ROUND(AVG(CASE WHEN success = 1 THEN 100.0 ELSE 0.0 END), 2) as success_rate
-		FROM request_logs
+			SUM(requests) as requests,
+			SUM(request_tokens) as request_tokens,
+			SUM(response_tokens) as response_tokens,
+			SUM(total_tokens) as total_tokens,
+			CASE WHEN SUM(requests) > 0 
+				THEN ROUND(SUM(success_count) * 100.0 / SUM(requests), 2) 
+				ELSE 0 
+			END as success_rate
+		FROM (
+			-- 从 hourly_stats 获取历史数据
+			SELECT 
+				model,
+				SUM(request_count) as requests,
+				SUM(request_tokens) as request_tokens,
+				SUM(response_tokens) as response_tokens,
+				SUM(total_tokens) as total_tokens,
+				SUM(success_count) as success_count
+			FROM hourly_stats
+			GROUP BY model
+			
+			UNION ALL
+			
+			-- 从 request_logs 获取实时数据
+			SELECT
+				model,
+				COUNT(*) as requests,
+				COALESCE(SUM(request_tokens), 0) as request_tokens,
+				COALESCE(SUM(response_tokens), 0) as response_tokens,
+				COALESCE(SUM(total_tokens), 0) as total_tokens,
+				SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
+			FROM request_logs
+			GROUP BY model
+		)
 		GROUP BY model
 		ORDER BY total_tokens DESC
 	`
@@ -693,4 +740,273 @@ func (s *RouteService) GetModelRanking(limit int) ([]map[string]interface{}, err
 	}
 
 	return ranking, nil
+}
+
+// CompressDatabase 压缩数据库
+// 1. 将 request_logs 中今天之前的数据按小时聚合到 hourly_stats
+// 2. 删除已聚合的 request_logs 数据
+// 3. 更新 usage_summary 中的周/年/总用量
+// 4. 删除超过 366 天的 hourly_stats 数据
+func (s *RouteService) CompressDatabase() (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	// 开始事务
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	// 1. 统计压缩前的数据量
+	var beforeCount int
+	err = tx.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&beforeCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count request_logs: %v", err)
+	}
+	result["before_count"] = beforeCount
+
+	// 2. 将今天之前的数据按小时聚合
+	// 先创建临时表存储聚合结果
+	_, err = tx.Exec(`
+		CREATE TEMP TABLE temp_hourly AS
+		SELECT 
+			substr(created_at, 1, 10) as date,
+			CAST(substr(created_at, 12, 2) AS INTEGER) as hour,
+			model,
+			COUNT(*) as request_count,
+			COALESCE(SUM(request_tokens), 0) as request_tokens,
+			COALESCE(SUM(response_tokens), 0) as response_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens,
+			SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+			SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as fail_count
+		FROM request_logs
+		WHERE substr(created_at, 1, 10) < date('now', 'localtime')
+		GROUP BY substr(created_at, 1, 10), CAST(substr(created_at, 12, 2) AS INTEGER), model
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp table: %v", err)
+	}
+
+	// 3. 合并到 hourly_stats（累加已存在的记录，插入新记录）
+	_, err = tx.Exec(`
+		INSERT INTO hourly_stats (date, hour, model, request_count, request_tokens, response_tokens, total_tokens, success_count, fail_count)
+		SELECT date, hour, model, request_count, request_tokens, response_tokens, total_tokens, success_count, fail_count
+		FROM temp_hourly
+		WHERE NOT EXISTS (
+			SELECT 1 FROM hourly_stats h 
+			WHERE h.date = temp_hourly.date AND h.hour = temp_hourly.hour AND h.model = temp_hourly.model
+		)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert new hourly stats: %v", err)
+	}
+
+	_, err = tx.Exec(`
+		UPDATE hourly_stats SET
+			request_count = hourly_stats.request_count + (SELECT request_count FROM temp_hourly t WHERE t.date = hourly_stats.date AND t.hour = hourly_stats.hour AND t.model = hourly_stats.model),
+			request_tokens = hourly_stats.request_tokens + (SELECT request_tokens FROM temp_hourly t WHERE t.date = hourly_stats.date AND t.hour = hourly_stats.hour AND t.model = hourly_stats.model),
+			response_tokens = hourly_stats.response_tokens + (SELECT response_tokens FROM temp_hourly t WHERE t.date = hourly_stats.date AND t.hour = hourly_stats.hour AND t.model = hourly_stats.model),
+			total_tokens = hourly_stats.total_tokens + (SELECT total_tokens FROM temp_hourly t WHERE t.date = hourly_stats.date AND t.hour = hourly_stats.hour AND t.model = hourly_stats.model),
+			success_count = hourly_stats.success_count + (SELECT success_count FROM temp_hourly t WHERE t.date = hourly_stats.date AND t.hour = hourly_stats.hour AND t.model = hourly_stats.model),
+			fail_count = hourly_stats.fail_count + (SELECT fail_count FROM temp_hourly t WHERE t.date = hourly_stats.date AND t.hour = hourly_stats.hour AND t.model = hourly_stats.model)
+		WHERE EXISTS (SELECT 1 FROM temp_hourly t WHERE t.date = hourly_stats.date AND t.hour = hourly_stats.hour AND t.model = hourly_stats.model)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update hourly stats: %v", err)
+	}
+
+	// 4. 删除临时表
+	_, err = tx.Exec("DROP TABLE temp_hourly")
+	if err != nil {
+		return nil, fmt.Errorf("failed to drop temp table: %v", err)
+	}
+
+	// 5. 删除今天之前的原始请求日志
+	deleteResult, err := tx.Exec(`
+		DELETE FROM request_logs 
+		WHERE substr(created_at, 1, 10) < date('now', 'localtime')
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete old logs: %v", err)
+	}
+	deletedLogs, _ := deleteResult.RowsAffected()
+	result["deleted_logs"] = deletedLogs
+
+	// 6. 更新 usage_summary
+	// 周用量
+	_, err = tx.Exec(`
+		INSERT OR REPLACE INTO usage_summary (period_type, period_key, request_count, request_tokens, response_tokens, total_tokens, success_count, fail_count, updated_at)
+		SELECT 
+			'week' as period_type,
+			strftime('%Y-W%W', date) as period_key,
+			SUM(request_count), SUM(request_tokens), SUM(response_tokens), SUM(total_tokens), SUM(success_count), SUM(fail_count),
+			datetime('now', 'localtime')
+		FROM hourly_stats
+		GROUP BY strftime('%Y-W%W', date)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update week summary: %v", err)
+	}
+
+	// 年用量
+	_, err = tx.Exec(`
+		INSERT OR REPLACE INTO usage_summary (period_type, period_key, request_count, request_tokens, response_tokens, total_tokens, success_count, fail_count, updated_at)
+		SELECT 
+			'year' as period_type,
+			strftime('%Y', date) as period_key,
+			SUM(request_count), SUM(request_tokens), SUM(response_tokens), SUM(total_tokens), SUM(success_count), SUM(fail_count),
+			datetime('now', 'localtime')
+		FROM hourly_stats
+		GROUP BY strftime('%Y', date)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update year summary: %v", err)
+	}
+
+	// 总用量
+	_, err = tx.Exec(`
+		INSERT OR REPLACE INTO usage_summary (period_type, period_key, request_count, request_tokens, response_tokens, total_tokens, success_count, fail_count, updated_at)
+		SELECT 
+			'total', 'total',
+			SUM(request_count), SUM(request_tokens), SUM(response_tokens), SUM(total_tokens), SUM(success_count), SUM(fail_count),
+			datetime('now', 'localtime')
+		FROM hourly_stats
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update total summary: %v", err)
+	}
+
+	// 7. 删除超过 366 天的 hourly_stats 数据
+	deleteStatsResult, err := tx.Exec(`
+		DELETE FROM hourly_stats 
+		WHERE date < date('now', 'localtime', '-366 days')
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete old hourly stats: %v", err)
+	}
+	deletedStats, _ := deleteStatsResult.RowsAffected()
+	result["deleted_hourly_stats"] = deletedStats
+
+	// 8. 统计压缩后的数据量
+	var afterCount int
+	err = tx.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&afterCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count request_logs after: %v", err)
+	}
+	result["after_count"] = afterCount
+
+	var hourlyStatsCount int
+	err = tx.QueryRow("SELECT COUNT(*) FROM hourly_stats").Scan(&hourlyStatsCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count hourly_stats: %v", err)
+	}
+	result["hourly_stats_count"] = hourlyStatsCount
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	// 9. 执行 VACUUM 压缩数据库文件
+	_, err = s.db.Exec("VACUUM")
+	if err != nil {
+		log.Warnf("VACUUM failed: %v", err)
+	}
+
+	log.Infof("Database compressed: before=%d, after=%d, deleted_logs=%d, deleted_stats=%d, hourly_stats=%d",
+		beforeCount, afterCount, deletedLogs, deletedStats, hourlyStatsCount)
+
+	return result, nil
+}
+
+// GetUsageSummary 获取用量汇总
+func (s *RouteService) GetUsageSummary() (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	// 获取周用量
+	weekRows, err := s.db.Query(`
+		SELECT period_key, request_count, request_tokens, response_tokens, total_tokens, success_count, fail_count
+		FROM usage_summary 
+		WHERE period_type = 'week' 
+		ORDER BY period_key DESC 
+		LIMIT 10
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer weekRows.Close()
+
+	var weekStats []map[string]interface{}
+	for weekRows.Next() {
+		var periodKey string
+		var requestCount, requestTokens, responseTokens, totalTokens, successCount, failCount int64
+		err := weekRows.Scan(&periodKey, &requestCount, &requestTokens, &responseTokens, &totalTokens, &successCount, &failCount)
+		if err != nil {
+			continue
+		}
+		weekStats = append(weekStats, map[string]interface{}{
+			"period":          periodKey,
+			"request_count":   requestCount,
+			"request_tokens":  requestTokens,
+			"response_tokens": responseTokens,
+			"total_tokens":    totalTokens,
+			"success_count":   successCount,
+			"fail_count":      failCount,
+		})
+	}
+	result["week_stats"] = weekStats
+
+	// 获取年用量
+	yearRows, err := s.db.Query(`
+		SELECT period_key, request_count, request_tokens, response_tokens, total_tokens, success_count, fail_count
+		FROM usage_summary 
+		WHERE period_type = 'year' 
+		ORDER BY period_key DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer yearRows.Close()
+
+	var yearStats []map[string]interface{}
+	for yearRows.Next() {
+		var periodKey string
+		var requestCount, requestTokens, responseTokens, totalTokens, successCount, failCount int64
+		err := yearRows.Scan(&periodKey, &requestCount, &requestTokens, &responseTokens, &totalTokens, &successCount, &failCount)
+		if err != nil {
+			continue
+		}
+		yearStats = append(yearStats, map[string]interface{}{
+			"period":          periodKey,
+			"request_count":   requestCount,
+			"request_tokens":  requestTokens,
+			"response_tokens": responseTokens,
+			"total_tokens":    totalTokens,
+			"success_count":   successCount,
+			"fail_count":      failCount,
+		})
+	}
+	result["year_stats"] = yearStats
+
+	// 获取总用量
+	var totalRequestCount, totalRequestTokens, totalResponseTokens, totalTotalTokens, totalSuccessCount, totalFailCount int64
+	err = s.db.QueryRow(`
+		SELECT COALESCE(request_count, 0), COALESCE(request_tokens, 0), COALESCE(response_tokens, 0), 
+		       COALESCE(total_tokens, 0), COALESCE(success_count, 0), COALESCE(fail_count, 0)
+		FROM usage_summary 
+		WHERE period_type = 'total' AND period_key = 'total'
+	`).Scan(&totalRequestCount, &totalRequestTokens, &totalResponseTokens, &totalTotalTokens, &totalSuccessCount, &totalFailCount)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	result["total_stats"] = map[string]interface{}{
+		"request_count":   totalRequestCount,
+		"request_tokens":  totalRequestTokens,
+		"response_tokens": totalResponseTokens,
+		"total_tokens":    totalTotalTokens,
+		"success_count":   totalSuccessCount,
+		"fail_count":      totalFailCount,
+	}
+
+	return result, nil
 }
