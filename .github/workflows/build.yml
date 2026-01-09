@@ -293,9 +293,56 @@ jobs:
           name: anyproxyai-linux-amd64
           path: build/bin/anyproxyai-linux-amd64
 
+  # Linux arm64 build
+  build-linux-arm64:
+    needs: check-build
+    if: needs.check-build.outputs.should_build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+          cache-dependency-path: go.sum
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      
+      - name: Install frontend dependencies
+        run: cd frontend && npm install
+      
+      - name: Build frontend
+        run: cd frontend && npm run build
+      
+      - name: Build Linux arm64
+        run: |
+          export CGO_ENABLED=1
+          export GOOS=linux
+          export GOARCH=arm64
+          export CC=aarch64-linux-gnu-gcc
+          go build -ldflags "-s -w" -o build/bin/anyproxyai-linux-arm64 .
+      
+      - name: Upload Linux arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyproxyai-linux-arm64
+          path: build/bin/anyproxyai-linux-arm64
+
   # Release job
   release:
-    needs: [check-build, build-windows-amd64, build-windows-arm64, build-macos, build-linux-amd64]
+    needs: [check-build, build-windows-amd64, build-windows-arm64, build-macos, build-linux-amd64, build-linux-arm64]
     runs-on: ubuntu-latest
     if: needs.check-build.outputs.should_release == 'true'
     steps:
@@ -341,6 +388,7 @@ jobs:
             | macOS | arm64 (Apple Silicon) | anyproxyai-darwin-arm64.zip |
             | macOS | amd64 (Intel) | anyproxyai-darwin-amd64.zip |
             | Linux | amd64 | anyproxyai-linux-amd64 |
+            | Linux | arm64 | anyproxyai-linux-arm64 |
             
             > 注意: Windows arm64 版本不包含图标（rsrc 工具限制）
           files: |
@@ -349,5 +397,6 @@ jobs:
             artifacts/anyproxyai-darwin-arm64/*
             artifacts/anyproxyai-darwin-amd64/*
             artifacts/anyproxyai-linux-amd64/*
+            artifacts/anyproxyai-linux-arm64/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
