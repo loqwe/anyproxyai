@@ -6,6 +6,7 @@ echo.
 echo Starting Desktop Application (GUI)...
 echo.
 
+
 REM 查找可执行文件
 if exist "build\bin\openai-router.exe" (
     echo Found: build\bin\openai-router.exe
