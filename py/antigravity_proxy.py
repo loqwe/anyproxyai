@@ -2029,6 +2029,659 @@ class OpenAIStreamingProcessor:
         return "data: [DONE]\n\n"
 
 
+# ============ OpenAI Responses API Converter ============
+
+class ResponsesAPIConverter:
+    """Convert between OpenAI Responses API format and Claude format.
+    
+    OpenAI Responses API format (v1/responses):
+    - input: [{type: "message", role: "user", content: [{type: "input_text", text: "..."}]}]
+    - output: [{type: "message", role: "assistant", content: [{type: "output_text", text: "..."}]}]
+    - Streaming events: response.created, response.output_text.delta, response.function_call_arguments.delta, etc.
+    """
+    
+    @staticmethod
+    def responses_to_claude(responses_req: dict) -> dict:
+        """Convert OpenAI Responses API request to Claude format.
+        
+        Responses API input format:
+        {
+            "model": "gpt-5",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Hello"}]
+                }
+            ],
+            "tools": [...],
+            "max_output_tokens": 4096
+        }
+        """
+        messages = []
+        system_content = None
+        
+        # Handle input - can be string or array of items
+        input_data = responses_req.get("input", [])
+        
+        if isinstance(input_data, str):
+            # Simple string input
+            messages.append({"role": "user", "content": input_data})
+        elif isinstance(input_data, list):
+            for item in input_data:
+                item_type = item.get("type", "")
+                
+                if item_type == "message":
+                    role = item.get("role", "user")
+                    content = item.get("content", [])
+                    
+                    # Handle system messages
+                    if role == "system":
+                        texts = []
+                        if isinstance(content, str):
+                            texts.append(content)
+                        elif isinstance(content, list):
+                            for c in content:
+                                if c.get("type") == "input_text":
+                                    texts.append(c.get("text", ""))
+                        if texts:
+                            system_content = "\n".join(texts)
+                        continue
+                    
+                    # Convert content blocks
+                    claude_content = []
+                    if isinstance(content, str):
+                        claude_content.append({"type": "text", "text": content})
+                    elif isinstance(content, list):
+                        for c in content:
+                            c_type = c.get("type", "")
+                            if c_type == "input_text":
+                                text = c.get("text", "")
+                                if text:
+                                    claude_content.append({"type": "text", "text": text})
+                            elif c_type == "input_image":
+                                # Handle image input
+                                image_url = c.get("image_url", "")
+                                if image_url.startswith("data:"):
+                                    parts = image_url.split(",", 1)
+                                    if len(parts) == 2:
+                                        media_type = parts[0].split(";")[0].replace("data:", "")
+                                        claude_content.append({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": media_type,
+                                                "data": parts[1]
+                                            }
+                                        })
+                            elif c_type == "output_text":
+                                # Assistant output from history
+                                text = c.get("text", "")
+                                if text:
+                                    claude_content.append({"type": "text", "text": text})
+                            elif c_type == "tool_result":
+                                # Tool result
+                                claude_content.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": c.get("call_id", ""),
+                                    "content": c.get("output_text", "") or json.dumps(c.get("output", {}))
+                                })
+                    
+                    if claude_content:
+                        # Map role
+                        if role == "assistant":
+                            messages.append({"role": "assistant", "content": claude_content})
+                        else:
+                            messages.append({"role": "user", "content": claude_content})
+                
+                elif item_type == "function_call":
+                    # Function call from history (assistant made this call)
+                    messages.append({
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": item.get("call_id", item.get("id", "")),
+                            "name": item.get("name", ""),
+                            "input": json.loads(item.get("arguments", "{}")) if isinstance(item.get("arguments"), str) else item.get("arguments", {})
+                        }]
+                    })
+                
+                elif item_type == "function_call_output":
+                    # Function call output (tool result)
+                    messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": item.get("call_id", ""),
+                            "content": item.get("output", "")
+                        }]
+                    })
+                
+                elif item_type == "reasoning":
+                    # Reasoning/thinking from history - skip or convert to text
+                    pass
+        
+        # Build Claude request
+        claude_req = {
+            "model": responses_req.get("model", "claude-sonnet-4-5"),
+            "messages": messages,
+            "max_tokens": responses_req.get("max_output_tokens", 4096),
+            "stream": responses_req.get("stream", False),
+        }
+        
+        if system_content:
+            claude_req["system"] = system_content
+        
+        # Handle instructions (system prompt)
+        instructions = responses_req.get("instructions")
+        if instructions:
+            if system_content:
+                claude_req["system"] = instructions + "\n\n" + system_content
+            else:
+                claude_req["system"] = instructions
+        
+        # Convert tools
+        tools = responses_req.get("tools", [])
+        if tools:
+            claude_tools = []
+            for tool in tools:
+                tool_type = tool.get("type", "")
+                if tool_type == "function":
+                    claude_tools.append({
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "input_schema": clean_json_schema(tool.get("parameters", {}))
+                    })
+                elif tool_type == "web_search":
+                    claude_tools.append({
+                        "name": "web_search",
+                        "description": "Search the web",
+                        "input_schema": {"type": "object", "properties": {}}
+                    })
+            if claude_tools:
+                claude_req["tools"] = claude_tools
+        
+        # Temperature
+        if responses_req.get("temperature") is not None:
+            claude_req["temperature"] = responses_req["temperature"]
+        
+        return claude_req
+    
+    @staticmethod
+    def claude_to_responses_response(claude_resp: dict) -> dict:
+        """Convert Claude response to OpenAI Responses API format.
+        
+        Responses API output format:
+        {
+            "id": "resp_xxx",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "summary": [...]},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "..."}]}
+            ],
+            "usage": {...}
+        }
+        """
+        output = []
+        
+        # Process content blocks
+        message_content = []
+        for block in claude_resp.get("content", []):
+            block_type = block.get("type", "")
+            
+            if block_type == "thinking":
+                # Add reasoning output item
+                thinking_text = block.get("thinking", "")
+                if thinking_text:
+                    output.append({
+                        "id": f"rs_{generate_random_id()}",
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": thinking_text[:500] + "..." if len(thinking_text) > 500 else thinking_text}]
+                    })
+            
+            elif block_type == "text":
+                text = block.get("text", "")
+                if text:
+                    message_content.append({
+                        "type": "output_text",
+                        "text": text,
+                        "annotations": []
+                    })
+            
+            elif block_type == "tool_use":
+                # Add function_call output item
+                output.append({
+                    "id": block.get("id", f"call_{generate_random_id()}"),
+                    "type": "function_call",
+                    "name": block.get("name", ""),
+                    "arguments": json.dumps(block.get("input", {})),
+                    "call_id": block.get("id", ""),
+                    "status": "completed"
+                })
+        
+        # Add message output item if there's content
+        if message_content:
+            output.append({
+                "id": f"msg_{generate_random_id()}",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": message_content
+            })
+        
+        # Determine status
+        stop_reason = claude_resp.get("stop_reason", "end_turn")
+        status = "completed"
+        if stop_reason == "max_tokens":
+            status = "incomplete"
+        
+        # Build usage
+        usage = claude_resp.get("usage", {})
+        
+        return {
+            "id": f"resp_{claude_resp.get('id', generate_random_id())}",
+            "object": "response",
+            "created_at": int(time.time()),
+            "status": status,
+            "model": claude_resp.get("model", ""),
+            "output": output,
+            "usage": {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+            }
+        }
+
+
+# ============ OpenAI Responses API Streaming Processor ============
+
+class ResponsesStreamingProcessor:
+    """Process streaming for OpenAI Responses API format.
+    
+    Directly processes Gemini v1internal SSE stream to Responses API events.
+    
+    Event types:
+    - response.created / response.in_progress / response.completed
+    - response.output_item.added / response.output_item.done
+    - response.content_part.added / response.content_part.done
+    - response.output_text.delta / response.output_text.done
+    - response.function_call_arguments.delta / response.function_call_arguments.done
+    """
+    
+    def __init__(self, original_model: str):
+        self.original_model = original_model
+        self.response_id = f"resp_{generate_random_id()}"
+        self.created_at = int(time.time())
+        self.started = False
+        self.finished = False
+        self.sequence_number = 0
+        
+        # Output tracking
+        self.output_items = []
+        self.current_output_index = -1
+        self.current_content_index = -1
+        
+        # State tracking
+        self.in_reasoning = False
+        self.in_message = False
+        self.in_function_call = False
+        self.current_text = ""
+        self.current_reasoning = ""
+        self.current_function_name = ""
+        self.current_function_args = ""
+        self.current_function_id = ""
+        
+        # Usage
+        self.input_tokens = 0
+        self.output_tokens = 0
+        
+        debug_print(f"[ResponsesStream] Initialized processor for model={original_model}")
+    
+    def _next_seq(self) -> int:
+        self.sequence_number += 1
+        return self.sequence_number
+    
+    def _format_event(self, event_type: str, data: dict) -> str:
+        """Format a Responses API SSE event."""
+        data["sequence_number"] = self._next_seq()
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    
+    def _emit_response_created(self) -> str:
+        """Emit response.created event."""
+        return self._format_event("response.created", {
+            "type": "response.created",
+            "response": {
+                "id": self.response_id,
+                "object": "response",
+                "created_at": self.created_at,
+                "status": "in_progress",
+                "model": self.original_model,
+                "output": [],
+                "usage": None
+            }
+        })
+    
+    def _emit_output_item_added(self, item: dict) -> str:
+        """Emit response.output_item.added event."""
+        self.current_output_index += 1
+        return self._format_event("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": self.current_output_index,
+            "item": item
+        })
+    
+    def _emit_content_part_added(self, part: dict) -> str:
+        """Emit response.content_part.added event."""
+        self.current_content_index += 1
+        return self._format_event("response.content_part.added", {
+            "type": "response.content_part.added",
+            "item_id": f"msg_{self.current_output_index}",
+            "output_index": self.current_output_index,
+            "content_index": self.current_content_index,
+            "part": part
+        })
+    
+    def _emit_text_delta(self, delta: str) -> str:
+        """Emit response.output_text.delta event."""
+        return self._format_event("response.output_text.delta", {
+            "type": "response.output_text.delta",
+            "item_id": f"msg_{self.current_output_index}",
+            "output_index": self.current_output_index,
+            "content_index": self.current_content_index,
+            "delta": delta
+        })
+    
+    def _emit_function_call_args_delta(self, delta: str) -> str:
+        """Emit response.function_call_arguments.delta event."""
+        return self._format_event("response.function_call_arguments.delta", {
+            "type": "response.function_call_arguments.delta",
+            "item_id": self.current_function_id,
+            "output_index": self.current_output_index,
+            "call_id": self.current_function_id,
+            "delta": delta
+        })
+    
+    def process_line(self, line: str) -> str:
+        """Process a single SSE line from Gemini v1internal response."""
+        line = line.strip()
+        if not line or not line.startswith("data:"):
+            return ""
+        
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            return ""
+        
+        try:
+            v1_resp = json.loads(data)
+        except json.JSONDecodeError:
+            return ""
+        
+        gemini_resp = v1_resp.get("response", v1_resp)
+        result = []
+        
+        # Emit response.created on first data
+        if not self.started:
+            self.started = True
+            result.append(self._emit_response_created())
+        
+        # Update usage
+        usage_meta = gemini_resp.get("usageMetadata", {})
+        if usage_meta:
+            cached = usage_meta.get("cachedContentTokenCount", 0)
+            self.input_tokens = usage_meta.get("promptTokenCount", 0) - cached
+            self.output_tokens = usage_meta.get("candidatesTokenCount", 0)
+        
+        # Process candidates
+        candidates = gemini_resp.get("candidates", [])
+        if candidates and candidates[0].get("content"):
+            for part in candidates[0]["content"].get("parts", []):
+                result.append(self._process_part(part))
+        
+        # Check for finish
+        if candidates:
+            finish_reason = candidates[0].get("finishReason", "")
+            if finish_reason and not self.finished:
+                result.append(self._emit_finish(finish_reason))
+        
+        return "".join(result)
+    
+    def _process_part(self, part: dict) -> str:
+        """Process a single part from Gemini response."""
+        result = []
+        
+        is_thought = part.get("thought", False)
+        text = part.get("text", "")
+        signature = part.get("thoughtSignature", "")
+        
+        # Store signature globally
+        if signature:
+            global_thought_signature_store(signature)
+        
+        # Handle thinking/reasoning content
+        if is_thought:
+            if not self.in_reasoning:
+                # Start new reasoning output item
+                self.in_reasoning = True
+                self.current_reasoning = ""
+                item = {
+                    "id": f"rs_{generate_random_id()}",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "summary": []
+                }
+                result.append(self._emit_output_item_added(item))
+            
+            if text:
+                self.current_reasoning += text
+                # For reasoning, we don't stream deltas, just accumulate
+            return "".join(result)
+        
+        # Handle function call
+        if part.get("functionCall"):
+            fc = part["functionCall"]
+            self.current_function_id = fc.get("id") or f"call_{generate_random_id()}"
+            self.current_function_name = fc.get("name", "")
+            self.current_function_args = json.dumps(fc.get("args", {}))
+            
+            # Close any open reasoning
+            if self.in_reasoning:
+                self.in_reasoning = False
+                result.append(self._format_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": self.current_output_index,
+                    "item": {
+                        "id": f"rs_{self.current_output_index}",
+                        "type": "reasoning",
+                        "status": "completed",
+                        "summary": [{"type": "summary_text", "text": self.current_reasoning[:500]}] if self.current_reasoning else []
+                    }
+                }))
+            
+            # Close any open message
+            if self.in_message:
+                self.in_message = False
+                result.append(self._format_event("response.content_part.done", {
+                    "type": "response.content_part.done",
+                    "item_id": f"msg_{self.current_output_index}",
+                    "output_index": self.current_output_index,
+                    "content_index": self.current_content_index,
+                    "part": {"type": "output_text", "text": self.current_text, "annotations": []}
+                }))
+                result.append(self._format_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": self.current_output_index,
+                    "item": {
+                        "id": f"msg_{self.current_output_index}",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": self.current_text, "annotations": []}]
+                    }
+                }))
+            
+            # Emit function_call output item
+            item = {
+                "id": self.current_function_id,
+                "type": "function_call",
+                "name": self.current_function_name,
+                "call_id": self.current_function_id,
+                "arguments": "",
+                "status": "in_progress"
+            }
+            result.append(self._emit_output_item_added(item))
+            
+            # Emit arguments delta
+            result.append(self._emit_function_call_args_delta(self.current_function_args))
+            
+            # Emit function_call_arguments.done
+            result.append(self._format_event("response.function_call_arguments.done", {
+                "type": "response.function_call_arguments.done",
+                "item_id": self.current_function_id,
+                "output_index": self.current_output_index,
+                "call_id": self.current_function_id,
+                "arguments": self.current_function_args
+            }))
+            
+            # Emit output_item.done for function call
+            result.append(self._format_event("response.output_item.done", {
+                "type": "response.output_item.done",
+                "output_index": self.current_output_index,
+                "item": {
+                    "id": self.current_function_id,
+                    "type": "function_call",
+                    "name": self.current_function_name,
+                    "call_id": self.current_function_id,
+                    "arguments": self.current_function_args,
+                    "status": "completed"
+                }
+            }))
+            
+            return "".join(result)
+        
+        # Handle regular text
+        if text:
+            # Close any open reasoning first
+            if self.in_reasoning:
+                self.in_reasoning = False
+                result.append(self._format_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": self.current_output_index,
+                    "item": {
+                        "id": f"rs_{self.current_output_index}",
+                        "type": "reasoning",
+                        "status": "completed",
+                        "summary": [{"type": "summary_text", "text": self.current_reasoning[:500]}] if self.current_reasoning else []
+                    }
+                }))
+            
+            if not self.in_message:
+                # Start new message output item
+                self.in_message = True
+                self.current_text = ""
+                self.current_content_index = -1
+                
+                item = {
+                    "id": f"msg_{generate_random_id()}",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "content": []
+                }
+                result.append(self._emit_output_item_added(item))
+                
+                # Add content part
+                result.append(self._emit_content_part_added({
+                    "type": "output_text",
+                    "text": "",
+                    "annotations": []
+                }))
+            
+            self.current_text += text
+            result.append(self._emit_text_delta(text))
+        
+        return "".join(result)
+    
+    def _emit_finish(self, finish_reason: str) -> str:
+        """Emit completion events."""
+        result = []
+        
+        # Close any open message
+        if self.in_message:
+            self.in_message = False
+            result.append(self._format_event("response.output_text.done", {
+                "type": "response.output_text.done",
+                "item_id": f"msg_{self.current_output_index}",
+                "output_index": self.current_output_index,
+                "content_index": self.current_content_index,
+                "text": self.current_text
+            }))
+            result.append(self._format_event("response.content_part.done", {
+                "type": "response.content_part.done",
+                "item_id": f"msg_{self.current_output_index}",
+                "output_index": self.current_output_index,
+                "content_index": self.current_content_index,
+                "part": {"type": "output_text", "text": self.current_text, "annotations": []}
+            }))
+            result.append(self._format_event("response.output_item.done", {
+                "type": "response.output_item.done",
+                "output_index": self.current_output_index,
+                "item": {
+                    "id": f"msg_{self.current_output_index}",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": self.current_text, "annotations": []}]
+                }
+            }))
+        
+        # Close any open reasoning
+        if self.in_reasoning:
+            self.in_reasoning = False
+            result.append(self._format_event("response.output_item.done", {
+                "type": "response.output_item.done",
+                "output_index": self.current_output_index,
+                "item": {
+                    "id": f"rs_{self.current_output_index}",
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": self.current_reasoning[:500]}] if self.current_reasoning else []
+                }
+            }))
+        
+        # Determine status
+        status = "completed"
+        if finish_reason == "MAX_TOKENS":
+            status = "incomplete"
+        
+        # Emit response.completed
+        result.append(self._format_event("response.completed", {
+            "type": "response.completed",
+            "response": {
+                "id": self.response_id,
+                "object": "response",
+                "created_at": self.created_at,
+                "status": status,
+                "model": self.original_model,
+                "output": [],  # Full output would be here in real impl
+                "usage": {
+                    "input_tokens": self.input_tokens,
+                    "output_tokens": self.output_tokens,
+                    "total_tokens": self.input_tokens + self.output_tokens
+                }
+            }
+        }))
+        
+        self.finished = True
+        return "".join(result)
+    
+    def finish(self) -> str:
+        """Finish processing and return final events."""
+        if not self.finished:
+            return self._emit_finish("STOP")
+        return ""
+
+
 # ============ Cursor Streaming Processor ============
 
 class CursorStreamingProcessor:
@@ -3487,6 +4140,312 @@ class AntigravityProxy:
         
         return web.json_response(response_data)
     
+    # ============ Cursor2 Responses API ============
+    
+    async def handle_cursor2_responses(self, request: web.Request) -> web.StreamResponse:
+        """Handle /cursor2/v1/responses endpoint (OpenAI Responses API format).
+        
+        This endpoint implements the OpenAI Responses API format for Cursor and other
+        clients that support the newer API format.
+        
+        Key differences from Chat Completions:
+        - Uses 'input' instead of 'messages'
+        - Uses 'max_output_tokens' instead of 'max_tokens'
+        - Streaming uses semantic events (response.output_text.delta, etc.)
+        - Output includes 'reasoning' items for thinking content
+        """
+        debug_print("\n" + "="*60)
+        debug_print("[Cursor2] ========== NEW RESPONSES API REQUEST ==========")
+        
+        auth_error = self._check_auth(request)
+        if auth_error:
+            debug_print("[Cursor2] Auth failed")
+            return auth_error
+        
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            debug_print("[Cursor2] Invalid JSON in request body")
+            return web.json_response({
+                "error": {
+                    "message": "Invalid JSON",
+                    "type": "invalid_request_error",
+                    "code": "invalid_json"
+                }
+            }, status=400)
+        
+        # Log request details
+        debug_print(f"[Cursor2] Request Headers:")
+        for key, value in request.headers.items():
+            if key.lower() not in ('authorization', 'x-api-key', 'x-goog-api-key'):
+                debug_print(f"  {key}: {value}")
+        
+        debug_print(f"\n[Cursor2] Request Body:")
+        debug_print(f"  model: {body.get('model', 'N/A')}")
+        debug_print(f"  stream: {body.get('stream', False)}")
+        debug_print(f"  max_output_tokens: {body.get('max_output_tokens', 'N/A')}")
+        
+        # Log input summary
+        input_data = body.get("input", [])
+        if isinstance(input_data, str):
+            debug_print(f"  input: (string) '{input_data[:100]}...'")
+        elif isinstance(input_data, list):
+            debug_print(f"  input: ({len(input_data)} items)")
+            for i, item in enumerate(input_data[:5]):
+                item_type = item.get("type", "unknown")
+                role = item.get("role", "")
+                debug_print(f"    [{i}] type={item_type}, role={role}")
+            if len(input_data) > 5:
+                debug_print(f"    ... and {len(input_data) - 5} more")
+        
+        # Log tools
+        tools = body.get("tools", [])
+        if tools:
+            debug_print(f"\n[Cursor2] Tools ({len(tools)} total):")
+            for i, tool in enumerate(tools[:5]):
+                tool_type = tool.get("type", "unknown")
+                name = tool.get("name", "")
+                debug_print(f"  [{i}] type={tool_type}, name={name}")
+            if len(tools) > 5:
+                debug_print(f"  ... and {len(tools) - 5} more")
+        
+        project_error = await self._ensure_project()
+        if project_error:
+            debug_print("[Cursor2] Project error")
+            return project_error
+        
+        original_model = body.get("model", "")
+        mapped_model = get_mapped_model(original_model)
+        is_stream = body.get("stream", False)
+        
+        debug_print(f"\n[Cursor2] Model mapping: {original_model} -> {mapped_model}")
+        
+        # Convert Responses API format to Claude format
+        claude_req = ResponsesAPIConverter.responses_to_claude(body)
+        
+        debug_print(f"\n[Cursor2] Claude request:")
+        debug_print(f"  messages: {len(claude_req.get('messages', []))} messages")
+        debug_print(f"  system: {'yes' if claude_req.get('system') else 'no'}")
+        debug_print(f"  tools: {len(claude_req.get('tools', []))} tools")
+        
+        # Check if request has tools
+        has_tools = bool(claude_req.get("tools"))
+        
+        # Smart thinking injection
+        target_supports_thinking = model_supports_thinking(mapped_model)
+        messages = claude_req.get("messages", [])
+        history_compatible = not should_disable_thinking_due_to_history(messages)
+        has_valid_sig = has_valid_signature_for_function_calls(messages)
+        
+        can_enable_thinking = (
+            self.config.enable_thinking and 
+            target_supports_thinking and 
+            history_compatible and
+            (not has_tools or has_valid_sig)
+        )
+        
+        debug_print(f"\n[Cursor2] Thinking mode check:")
+        debug_print(f"  can_enable_thinking: {can_enable_thinking}")
+        
+        if can_enable_thinking:
+            claude_req["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.config.thinking_budget
+            }
+            debug_print(f"[Cursor2] Thinking ENABLED, budget={self.config.thinking_budget}")
+        
+        debug_print(f"\n[Cursor2] Final: model={mapped_model}, stream={is_stream}, has_tools={has_tools}")
+        
+        gemini_body = self.transformer.transform(claude_req, self.client.project_id, mapped_model)
+        
+        debug_print("="*60 + "\n")
+        
+        try:
+            status, headers, resp = await self.client.forward_request(gemini_body, stream=True)
+            
+            debug_print(f"[Cursor2] Upstream response: status={status}")
+            
+            if status >= 400:
+                error_text = await resp.text()
+                await resp.release()
+                debug_print(f"[Cursor2] Upstream error: {error_text[:500]}")
+                return web.json_response({
+                    "error": {
+                        "message": f"Upstream error ({status}): {error_text[:500]}",
+                        "type": "api_error",
+                        "code": str(status)
+                    }
+                }, status=status)
+            
+            if is_stream:
+                return await self._handle_cursor2_streaming(request, resp, original_model)
+            else:
+                return await self._handle_cursor2_non_streaming(resp, original_model)
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            debug_print(f"[Cursor2] Exception: {e}")
+            return web.json_response({
+                "error": {
+                    "message": str(e),
+                    "type": "api_error",
+                    "code": "internal_error"
+                }
+            }, status=500)
+    
+    async def _handle_cursor2_streaming(self, request: web.Request, resp, original_model: str) -> web.StreamResponse:
+        """Handle streaming for Cursor2 Responses API format.
+        
+        Uses ResponsesStreamingProcessor to emit proper Responses API events.
+        """
+        response = web.StreamResponse(status=200, headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        })
+        await response.prepare(request)
+        
+        processor = ResponsesStreamingProcessor(original_model)
+        client_disconnected = False
+        
+        try:
+            buffer = ""
+            async for chunk in resp.content.iter_any():
+                if client_disconnected:
+                    break
+                if chunk:
+                    buffer += chunk.decode("utf-8", errors="ignore")
+                    
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        
+                        events = processor.process_line(line)
+                        if events:
+                            if not await self._safe_write(response, events.encode("utf-8")):
+                                client_disconnected = True
+                                break
+            
+            # Process remaining buffer
+            if not client_disconnected and buffer.strip():
+                events = processor.process_line(buffer.strip())
+                if events:
+                    await self._safe_write(response, events.encode("utf-8"))
+            
+            # Finish
+            if not client_disconnected:
+                final_events = processor.finish()
+                if final_events:
+                    await self._safe_write(response, final_events.encode("utf-8"))
+        finally:
+            await resp.release()
+        
+        if not client_disconnected:
+            try:
+                await response.write_eof()
+            except Exception:
+                pass
+        return response
+    
+    async def _handle_cursor2_non_streaming(self, resp, original_model: str) -> web.Response:
+        """Handle non-streaming for Cursor2 Responses API format."""
+        collected_parts = []
+        usage_meta = {}
+        response_id = f"resp_{generate_random_id()}"
+        
+        try:
+            async for chunk in resp.content.iter_any():
+                if chunk:
+                    text = chunk.decode("utf-8", errors="ignore")
+                    for line in text.split("\n"):
+                        line = line.strip()
+                        if line.startswith("data:"):
+                            data = line[5:].strip()
+                            if data and data != "[DONE]":
+                                try:
+                                    v1_resp = json.loads(data)
+                                    gemini_resp = v1_resp.get("response", v1_resp)
+                                    response_id = v1_resp.get("responseId") or response_id
+                                    candidates = gemini_resp.get("candidates", [])
+                                    if candidates and candidates[0].get("content"):
+                                        collected_parts.extend(candidates[0]["content"].get("parts", []))
+                                    if gemini_resp.get("usageMetadata"):
+                                        usage_meta = gemini_resp["usageMetadata"]
+                                except json.JSONDecodeError:
+                                    pass
+        finally:
+            await resp.release()
+        
+        # Build Responses API output from collected parts
+        output = []
+        message_content = []
+        reasoning_text = ""
+        
+        for part in collected_parts:
+            if part.get("thought"):
+                thinking_text = part.get("text", "")
+                if thinking_text:
+                    reasoning_text += thinking_text
+                sig = part.get("thoughtSignature", "")
+                if sig:
+                    global_thought_signature_store(sig)
+            elif part.get("functionCall"):
+                fc = part["functionCall"]
+                tool_id = fc.get("id") or f"call_{generate_random_id()}"
+                output.append({
+                    "id": tool_id,
+                    "type": "function_call",
+                    "name": fc.get("name", ""),
+                    "call_id": tool_id,
+                    "arguments": json.dumps(fc.get("args", {})),
+                    "status": "completed"
+                })
+            elif part.get("text"):
+                message_content.append({
+                    "type": "output_text",
+                    "text": part["text"],
+                    "annotations": []
+                })
+        
+        # Add reasoning output item if present
+        if reasoning_text:
+            output.insert(0, {
+                "id": f"rs_{generate_random_id()}",
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text}]
+            })
+        
+        # Add message output item if there's content
+        if message_content:
+            output.append({
+                "id": f"msg_{generate_random_id()}",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": message_content
+            })
+        
+        cached = usage_meta.get("cachedContentTokenCount", 0)
+        response_data = {
+            "id": response_id,
+            "object": "response",
+            "created_at": int(time.time()),
+            "status": "completed",
+            "model": original_model,
+            "output": output,
+            "usage": {
+                "input_tokens": usage_meta.get("promptTokenCount", 0) - cached,
+                "output_tokens": usage_meta.get("candidatesTokenCount", 0),
+                "total_tokens": usage_meta.get("totalTokenCount", 0)
+            }
+        }
+        
+        return web.json_response(response_data)
+    
     # ============ Gemini API ============
     
     async def handle_gemini_generate(self, request: web.Request) -> web.StreamResponse:
@@ -3844,6 +4803,9 @@ async def create_app(config: Config) -> web.Application:
     # Cursor API (OpenAI-compatible with better tool_calls support)
     app.router.add_post("/cursor/v1/chat/completions", proxy.handle_cursor_chat)
     
+    # Cursor2 API (OpenAI Responses API format)
+    app.router.add_post("/cursor2/v1/responses", proxy.handle_cursor2_responses)
+    
     # Gemini API
     app.router.add_post("/v1beta/models/{model_action:.*:generateContent}", proxy.handle_gemini_generate)
     app.router.add_post("/v1beta/models/{model_action:.*:streamGenerateContent}", proxy.handle_gemini_stream_generate)
@@ -3905,6 +4867,7 @@ def main():
         print("  POST /v1/completions                           - OpenAI Legacy Completions API")
         print("  POST /v1/responses                             - Codex Responses API")
         print("  POST /cursor/v1/chat/completions               - Cursor API (with tool_calls)")
+        print("  POST /cursor2/v1/responses                     - Cursor2 API (OpenAI Responses API)")
         print("  POST /v1beta/models/{model}:generateContent    - Gemini API (non-streaming)")
         print("  POST /v1beta/models/{model}:streamGenerateContent - Gemini API (streaming)")
         print("  GET  /v1/models                                - List models (OpenAI)")

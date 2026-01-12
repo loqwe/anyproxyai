@@ -1203,14 +1203,17 @@ func (s *ProxyService) streamWithAdapter(reader io.Reader, writer io.Writer, flu
 func (s *ProxyService) streamDirect(reader io.Reader, writer io.Writer, flusher http.Flusher, model string, routeID int64) error {
 	buf := make([]byte, 4096)
 	var responseBuffer bytes.Buffer
+	var bytesWritten int64
 
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
 			// 将数据写入缓冲区以便后续解析token使用信息
 			responseBuffer.Write(buf[:n])
+			bytesWritten += int64(n)
 
 			if _, writeErr := writer.Write(buf[:n]); writeErr != nil {
+				log.Errorf("[Stream Direct] Failed to write to client: %v", writeErr)
 				s.routeService.LogRequest(model, routeID, 0, 0, 0, false, writeErr.Error())
 				return writeErr
 			}
@@ -1218,12 +1221,28 @@ func (s *ProxyService) streamDirect(reader io.Reader, writer io.Writer, flusher 
 		}
 		if err != nil {
 			if err == io.EOF {
+				log.Debugf("[Stream Direct] Stream completed. Total bytes: %d", bytesWritten)
+
 				// 尝试从响应中提取token使用信息
-				promptTokens, completionTokens := s.extractTokensFromStreamResponse(responseBuffer.String())
+				responseStr := responseBuffer.String()
+				log.Debugf("[Stream Direct] Response buffer length: %d bytes", len(responseStr))
+
+				// 仅在debug模式下记录响应内容（前500字符）
+				if len(responseStr) > 0 {
+					previewLen := 500
+					if len(responseStr) < previewLen {
+						previewLen = len(responseStr)
+					}
+					log.Debugf("[Stream Direct] Response preview: %s", responseStr[:previewLen])
+				}
+
+				promptTokens, completionTokens := s.extractTokensFromStreamResponse(responseStr)
 				totalTokens := promptTokens + completionTokens
+				log.Infof("[Stream Direct] Extracted tokens: prompt=%d, completion=%d, total=%d", promptTokens, completionTokens, totalTokens)
 				s.routeService.LogRequest(model, routeID, promptTokens, completionTokens, totalTokens, true, "")
 				return nil
 			}
+			log.Errorf("[Stream Direct] Stream error: %v", err)
 			s.routeService.LogRequest(model, routeID, 0, 0, 0, false, err.Error())
 			return err
 		}
@@ -3910,6 +3929,10 @@ func (s *ProxyService) ProxyCursorStreamRequest(requestBody []byte, headers map[
 		targetURL = s.buildAdapterStreamURL(cleanAPIUrl, adapterName, model)
 	} else {
 		reqData["stream"] = true
+		// 请求后端在流式响应中包含 usage 信息
+		reqData["stream_options"] = map[string]interface{}{
+			"include_usage": true,
+		}
 		transformedBody, _ = json.Marshal(reqData)
 		targetURL = buildOpenAIChatURL(route.APIUrl)
 	}
