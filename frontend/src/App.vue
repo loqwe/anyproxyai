@@ -47,6 +47,30 @@
             </template>
             {{ t('nav.stats') }}
           </n-button>
+
+          <n-button
+            size="small"
+            :type="currentPage === 'logs' ? 'primary' : 'default'"
+            :ghost="currentPage !== 'logs'"
+            @click="currentPage = 'logs'"
+          >
+            <template #icon>
+              <n-icon><DocumentTextIcon /></n-icon>
+            </template>
+            {{ t('nav.logs') }}
+          </n-button>
+
+          <n-button
+            size="small"
+            :type="currentPage === 'health' ? 'primary' : 'default'"
+            :ghost="currentPage !== 'health'"
+            @click="currentPage = 'health'; loadHealthStatus()"
+          >
+            <template #icon>
+              <n-icon><PulseIcon /></n-icon>
+            </template>
+            {{ t('nav.health') }}
+          </n-button>
         </div>
 
         <div style="display: flex; align-items: center; gap: 16px;">
@@ -218,12 +242,17 @@
                       size="small"
                     >
                       <template #suffix>
-                        <n-button text size="small" @click="copyToClipboard(config.localApiKey)">
+                        <n-button text size="small" @click="copyToClipboard(config.localApiKey)" :title="t('home.copyApiKey')">
                           <template #icon>
                             <n-icon><CopyIcon /></n-icon>
                           </template>
                         </n-button>
-                        <n-button text size="small" @click="generateNewApiKey" style="margin-left: 8px;">
+                        <n-button text size="small" @click="showEditApiKeyModal = true" style="margin-left: 8px;" :title="t('home.editApiKey')">
+                          <template #icon>
+                            <n-icon><EditIcon /></n-icon>
+                          </template>
+                        </n-button>
+                        <n-button text size="small" @click="generateNewApiKey" style="margin-left: 8px;" :title="t('home.randomApiKey')">
                           <template #icon>
                             <n-icon><RefreshIcon /></n-icon>
                           </template>
@@ -567,6 +596,163 @@
           </n-space>
         </div>
 
+        <!-- Logs Page -->
+        <div v-if="currentPage === 'logs'">
+          <n-card :title="'📋 ' + t('logs.title')" :bordered="false">
+            <template #header-extra>
+              <n-space>
+                <n-button quaternary circle size="small" @click="loadRequestLogs" :loading="logsLoading">
+                  <template #icon>
+                    <n-icon><RefreshIcon /></n-icon>
+                  </template>
+                </n-button>
+              </n-space>
+            </template>
+
+            <!-- 筛选器 -->
+            <n-space style="margin-bottom: 16px;" align="center">
+              <n-input
+                v-model:value="logsFilter.model"
+                :placeholder="t('logs.filterModel')"
+                style="width: 180px;"
+                size="small"
+                clearable
+                @update:value="debounceLoadLogs"
+              >
+                <template #prefix>
+                  <n-icon><SearchIcon /></n-icon>
+                </template>
+              </n-input>
+              <n-select
+                v-model:value="logsFilter.style"
+                :placeholder="t('logs.filterStyle')"
+                :options="styleOptions"
+                style="width: 140px;"
+                size="small"
+                clearable
+                @update:value="loadRequestLogs"
+              />
+              <n-select
+                v-model:value="logsFilter.success"
+                :placeholder="t('logs.filterStatus')"
+                :options="successOptions"
+                style="width: 120px;"
+                size="small"
+                clearable
+                @update:value="loadRequestLogs"
+              />
+              <n-button size="small" @click="clearLogsFilter">
+                {{ t('logs.clearFilter') }}
+              </n-button>
+            </n-space>
+
+            <!-- 日志表格 -->
+            <n-data-table
+              :columns="logsColumns"
+              :data="logsData"
+              :bordered="false"
+              :single-line="false"
+              size="small"
+              striped
+              :loading="logsLoading"
+              :pagination="false"
+              :max-height="500"
+            />
+
+            <!-- 分页 -->
+            <n-space justify="center" style="margin-top: 16px;">
+              <n-pagination
+                v-model:page="logsPage"
+                :page-size="logsPageSize"
+                :item-count="logsTotal"
+                :page-sizes="[20, 50, 100]"
+                show-size-picker
+                @update:page="loadRequestLogs"
+                @update:page-size="handleLogsPageSizeChange"
+              />
+            </n-space>
+
+            <n-empty
+              v-if="logsData.length === 0 && !logsLoading"
+              :description="t('logs.noLogs')"
+              style="margin: 40px 0;"
+            />
+          </n-card>
+        </div>
+
+        <!-- Health Page -->
+        <div v-if="currentPage === 'health'">
+          <n-card :title="'📊 ' + t('health.title')" :bordered="false">
+            <template #header-extra>
+              <n-button quaternary circle size="small" @click="loadHealthStatus" :loading="healthLoading">
+                <template #icon>
+                  <n-icon><RefreshIcon /></n-icon>
+                </template>
+              </n-button>
+            </template>
+
+            <n-spin :show="healthLoading">
+              <n-space vertical :size="24">
+                <!-- 按分组显示 -->
+                <div v-for="group in healthData" :key="group.group">
+                  <n-card size="small" :bordered="true">
+                    <template #header>
+                      <n-space align="center">
+                        <n-text strong style="font-size: 16px;">
+                          {{ group.group === 'default' ? t('models.ungrouped') : group.group }}
+                        </n-text>
+                        <n-tag type="info" size="small">{{ group.route_count }} {{ t('health.routes') }}</n-tag>
+                        <n-tag :type="group.success_rate >= 90 ? 'success' : group.success_rate >= 70 ? 'warning' : 'error'" size="small">
+                          {{ t('health.successRate') }}: {{ group.success_rate.toFixed(1) }}%
+                        </n-tag>
+                      </n-space>
+                    </template>
+
+                    <!-- 路由列表 -->
+                    <n-space vertical :size="12">
+                      <div v-for="route in group.routes" :key="route.id" class="health-route-item">
+                        <n-space align="center" justify="space-between" style="width: 100%;">
+                          <n-space align="center" style="min-width: 200px;">
+                            <n-text strong>{{ route.name }}</n-text>
+                            <n-text depth="3" style="font-size: 12px;">{{ route.model }}</n-text>
+                          </n-space>
+                          
+                          <!-- 状态条 -->
+                          <div class="status-bar-container">
+                            <div class="status-bar" v-if="route.status_history && route.status_history.length > 0">
+                              <span
+                                v-for="(success, idx) in route.status_history"
+                                :key="idx"
+                                class="status-dot"
+                                :class="success ? 'success' : 'fail'"
+                                :title="success ? t('logs.success') : t('logs.failed')"
+                              ></span>
+                            </div>
+                            <n-text v-else depth="3" style="font-size: 12px;">{{ t('health.noData') }}</n-text>
+                          </div>
+
+                          <n-space align="center" style="min-width: 150px;">
+                            <n-tag :type="route.success_rate >= 90 ? 'success' : route.success_rate >= 70 ? 'warning' : 'error'" size="small">
+                              {{ route.success_rate.toFixed(1) }}%
+                            </n-tag>
+                            <n-text depth="3" style="font-size: 12px;">{{ route.total_requests }} {{ t('health.totalRequests') }}</n-text>
+                          </n-space>
+                        </n-space>
+                      </div>
+                    </n-space>
+                  </n-card>
+                </div>
+
+                <n-empty
+                  v-if="healthData.length === 0 && !healthLoading"
+                  :description="t('health.noData')"
+                  style="margin: 40px 0;"
+                />
+              </n-space>
+            </n-spin>
+          </n-card>
+        </div>
+
         <!-- Settings Page -->
         <div v-if="currentPage === 'settings'">
           <n-card :title="'⚙️ ' + t('settings.title')" :bordered="false">
@@ -633,6 +819,13 @@
                   </n-checkbox>
                   <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
                     {{ t('settings.enableFileLogDesc') }}
+                  </n-text>
+
+                  <n-checkbox v-model:checked="settings.fallbackEnabled" @update:checked="toggleFallbackEnabled">
+                    {{ t('settings.enableFallback') }}
+                  </n-checkbox>
+                  <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
+                    {{ t('settings.enableFallbackDesc') }}
                   </n-text>
 
                   <!-- API 端口设置 -->
@@ -788,13 +981,38 @@
       </template>
       {{ t('restartDialog.message') }}
     </n-modal>
+
+    <!-- Edit API Key Dialog -->
+    <n-modal
+      v-model:show="showEditApiKeyModal"
+      preset="card"
+      :title="t('home.editApiKeyTitle')"
+      style="width: 500px;"
+      :bordered="false"
+    >
+      <n-space vertical :size="16">
+        <n-text depth="3">{{ t('home.editApiKeyDesc') }}</n-text>
+        <n-input
+          v-model:value="newApiKey"
+          type="text"
+          :placeholder="t('home.apiKeyPlaceholder')"
+          clearable
+        />
+        <n-space justify="end">
+          <n-button @click="showEditApiKeyModal = false">{{ t('addRoute.cancel') }}</n-button>
+          <n-button type="primary" @click="saveCustomApiKey" :disabled="!newApiKey.trim()">
+            {{ t('settings.save') }}
+          </n-button>
+        </n-space>
+      </n-space>
+    </n-modal>
   </n-config-provider>
 </template>
 
 <script setup>
 import { ref, h, onMounted, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { darkTheme, NButton, NIcon, NTag, NSpace, NModal, NTooltip } from 'naive-ui'
+import { darkTheme, NButton, NIcon, NTag, NSpace, NModal, NTooltip, NSwitch } from 'naive-ui'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -830,6 +1048,12 @@ import {
   Trash as TrashIcon,
   Language as LanguageIcon,
   Archive as ArchiveIcon,
+  DocumentText as DocumentTextIcon,
+  TimeOutline as TimeIcon,
+  CheckmarkCircle as SuccessIcon,
+  CloseCircle as FailIcon,
+  Search as SearchIcon,
+  Pulse as PulseIcon,
 } from '@vicons/ionicons5'
 import AddRouteModal from './components/AddRouteModal.vue'
 import EditRouteModal from './components/EditRouteModal.vue'
@@ -913,6 +1137,7 @@ const settings = ref({
   autoStart: false,
   minimizeToTray: false,
   enableFileLog: false,
+  fallbackEnabled: true,
   port: 5642,
 })
 
@@ -1012,6 +1237,21 @@ const toggleEnableFileLog = async (enabled) => {
   } catch (error) {
     showMessage("error", t('messages.settingFailed') + ': ' + error)
     settings.value.enableFileLog = !enabled // 恢复状态
+  }
+}
+
+// 切换故障转移
+const toggleFallbackEnabled = async (enabled) => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  try {
+    await window.go.main.App.SetFallbackEnabled(enabled)
+    showMessage("success", enabled ? t('settings.fallbackEnabled') : t('settings.fallbackDisabled'))
+  } catch (error) {
+    showMessage("error", t('messages.settingFailed') + ': ' + error)
+    settings.value.fallbackEnabled = !enabled // 恢复状态
   }
 }
 
@@ -1492,6 +1732,226 @@ const yearlyColumns = computed(() => [
   },
 ])
 
+// ========== 请求日志相关 ==========
+const logsData = ref([])
+const logsLoading = ref(false)
+const logsPage = ref(1)
+const logsPageSize = ref(20)
+const logsTotal = ref(0)
+const logsFilter = ref({
+  model: '',
+  style: null,
+  success: null,
+})
+
+// 筛选器选项
+const styleOptions = computed(() => [
+  { label: 'OpenAI', value: 'openai' },
+  { label: 'Claude', value: 'claude' },
+  { label: 'Gemini', value: 'gemini' },
+])
+
+const successOptions = computed(() => [
+  { label: t('logs.success'), value: 'true' },
+  { label: t('logs.failed'), value: 'false' },
+])
+
+// 日志表格列定义
+const logsColumns = computed(() => [
+  {
+    title: t('logs.time'),
+    key: 'created_at',
+    width: 160,
+    render(row) {
+      const date = new Date(row.created_at)
+      return date.toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      })
+    }
+  },
+  {
+    title: t('logs.model'),
+    key: 'model',
+    width: 180,
+    ellipsis: { tooltip: true },
+    render(row) {
+      return h(NTag, { type: 'info', size: 'small' }, { default: () => row.model || '-' })
+    }
+  },
+  {
+    title: t('logs.providerModel'),
+    key: 'provider_model',
+    width: 180,
+    ellipsis: { tooltip: true },
+    render(row) {
+      return row.provider_model || '-'
+    }
+  },
+  {
+    title: t('logs.provider'),
+    key: 'provider_name',
+    width: 120,
+    render(row) {
+      return row.provider_name || '-'
+    }
+  },
+  {
+    title: t('logs.style'),
+    key: 'style',
+    width: 80,
+    render(row) {
+      const styleMap = {
+        'openai': { type: 'success', text: 'OpenAI' },
+        'claude': { type: 'warning', text: 'Claude' },
+        'gemini': { type: 'info', text: 'Gemini' },
+      }
+      const style = styleMap[row.style] || { type: 'default', text: row.style || '-' }
+      return h(NTag, { type: style.type, size: 'small' }, { default: () => style.text })
+    }
+  },
+  {
+    title: t('logs.inputTokens'),
+    key: 'request_tokens',
+    width: 90,
+    render(row) {
+      return formatNumber(row.request_tokens || 0)
+    }
+  },
+  {
+    title: t('logs.outputTokens'),
+    key: 'response_tokens',
+    width: 90,
+    render(row) {
+      return formatNumber(row.response_tokens || 0)
+    }
+  },
+  {
+    title: t('logs.proxyTime'),
+    key: 'proxy_time_ms',
+    width: 90,
+    render(row) {
+      const ms = row.proxy_time_ms || 0
+      if (ms >= 1000) {
+        return (ms / 1000).toFixed(1) + 's'
+      }
+      return ms + 'ms'
+    }
+  },
+  {
+    title: t('logs.status'),
+    key: 'success',
+    width: 70,
+    render(row) {
+      if (row.success) {
+        return h(NTag, { type: 'success', size: 'small' }, { default: () => t('logs.success') })
+      } else {
+        return h(
+          NTooltip,
+          { trigger: 'hover' },
+          {
+            trigger: () => h(NTag, { type: 'error', size: 'small' }, { default: () => t('logs.failed') }),
+            default: () => row.error_message || t('logs.unknownError')
+          }
+        )
+      }
+    }
+  },
+  {
+    title: t('logs.stream'),
+    key: 'is_stream',
+    width: 60,
+    render(row) {
+      return row.is_stream ? '✓' : '-'
+    }
+  },
+])
+
+// 加载请求日志
+const loadRequestLogs = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  logsLoading.value = true
+  try {
+    // 通过 Wails v3 shim 调用后端服务
+    const data = await window.go.main.App.GetRequestLogs(
+      logsPage.value,
+      logsPageSize.value,
+      logsFilter.value.model || '',
+      logsFilter.value.style || '',
+      logsFilter.value.success || ''
+    )
+    logsData.value = data.data || []
+    logsTotal.value = data.total || 0
+  } catch (error) {
+    console.error('加载请求日志失败:', error)
+    showMessage("error", t('logs.loadFailed') + ': ' + error)
+    logsData.value = []
+    logsTotal.value = 0
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+// 防抖加载日志
+let debounceTimer = null
+const debounceLoadLogs = () => {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+  }
+  debounceTimer = setTimeout(() => {
+    logsPage.value = 1
+    loadRequestLogs()
+  }, 300)
+}
+
+// 处理每页数量变化
+const handleLogsPageSizeChange = (pageSize) => {
+  logsPageSize.value = pageSize
+  logsPage.value = 1
+  loadRequestLogs()
+}
+
+// 清空筛选器
+const clearLogsFilter = () => {
+  logsFilter.value = {
+    model: '',
+    style: null,
+    success: null,
+  }
+  logsPage.value = 1
+  loadRequestLogs()
+}
+
+// ========== 健康监控相关 ==========
+const healthData = ref([])
+const healthLoading = ref(false)
+
+// 加载健康状态
+const loadHealthStatus = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  healthLoading.value = true
+  try {
+    const data = await window.go.main.App.GetHealthStatus()
+    healthData.value = data || []
+  } catch (error) {
+    console.error('加载健康状态失败:', error)
+    showMessage("error", t('health.loadFailed') + ': ' + error)
+    healthData.value = []
+  } finally {
+    healthLoading.value = false
+  }
+}
+
 // Config
 const config = ref({
   localApiKey: '',
@@ -1516,6 +1976,8 @@ const expandedGroups = ref([]) // 控制折叠面板展开状态
 const fileInput = ref(null) // 文件输入引用
 const showClearDialog = ref(false) // 清除数据确认对话框
 const showRestartDialog = ref(false) // 重启确认对话框
+const showEditApiKeyModal = ref(false) // 编辑 API Key 对话框
+const newApiKey = ref('') // 新 API Key 输入值
 
 // Computed: 按分组组织路由
 const groupedRoutes = computed(() => {
@@ -1676,6 +2138,24 @@ const modelsPageColumns = computed(() => [
     key: 'api_url',
     ellipsis: {
       tooltip: true,
+    },
+  },
+  {
+    title: t('models.enabled'),
+    key: 'enabled',
+    width: 100,
+    render(row) {
+      return h(NSpace, { align: 'center' }, {
+        default: () => [
+          h(NSwitch, {
+            value: row.enabled,
+            onUpdateValue: (val) => handleToggleRoute(row.id, val),
+          }),
+          h('span', { style: { fontSize: '12px', color: row.enabled ? '#18a058' : '#999' } }, 
+            row.enabled ? t('models.enabledStatus') : t('models.disabledStatus')
+          )
+        ]
+      })
     },
   },
   {
@@ -1844,6 +2324,7 @@ const loadConfig = async () => {
     settings.value.minimizeToTray = data.minimizeToTray || false
     settings.value.autoStart = data.autoStart || false
     settings.value.enableFileLog = data.enableFileLog || false
+    settings.value.fallbackEnabled = data.fallbackEnabled !== false // 默认启用
     settings.value.port = data.port || 5642
     console.log('Config loaded:', config.value)
   } catch (error) {
@@ -1902,6 +2383,22 @@ const handleDelete = async (row) => {
   }
 }
 
+// 启用/禁用路由
+const handleToggleRoute = async (id, enabled) => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", 'Wails 运行时未就绪')
+    return
+  }
+  try {
+    await window.go.main.App.ToggleRoute(id, enabled)
+    showMessage("success", enabled ? t('models.routeEnabled') : t('models.routeDisabled'))
+    loadRoutes()
+    loadStats()
+  } catch (error) {
+    showMessage("error", t('messages.updateFailed') + ': ' + error)
+  }
+}
+
 
 
 const maskApiKey = (key) => {
@@ -1946,9 +2443,32 @@ const generateNewApiKey = async () => {
   }
 
   try {
-    const newApiKey = generateRandomApiKey()
-    await window.go.main.App.UpdateLocalApiKey(newApiKey)
-    showMessage("success", 'API Key 已随机更新')
+    const randomKey = generateRandomApiKey()
+    await window.go.main.App.UpdateLocalApiKey(randomKey)
+    showMessage("success", t('home.apiKeyRandomized'))
+    await loadConfig() // 重新加载配置
+  } catch (error) {
+    showMessage("error", t('messages.updateFailed') + ': ' + error)
+  }
+}
+
+// 保存自定义 API Key
+const saveCustomApiKey = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", 'Wails 运行时未就绪')
+    return
+  }
+
+  if (!newApiKey.value.trim()) {
+    showMessage("warning", t('home.apiKeyRequired'))
+    return
+  }
+
+  try {
+    await window.go.main.App.UpdateLocalApiKey(newApiKey.value.trim())
+    showMessage("success", t('home.apiKeySaved'))
+    showEditApiKeyModal.value = false
+    newApiKey.value = ''
     await loadConfig() // 重新加载配置
   } catch (error) {
     showMessage("error", t('messages.updateFailed') + ': ' + error)
@@ -2116,6 +2636,13 @@ watch(groupedRoutes, (newGroups) => {
   console.log('Grouped routes changed, expanding all groups')
   expandedGroups.value = Object.keys(newGroups)
 }, { deep: true })
+
+// Watch currentPage to load logs when switching to logs page
+watch(currentPage, (newPage) => {
+  if (newPage === 'logs') {
+    loadRequestLogs()
+  }
+})
 </script>
 
 <style>
@@ -2304,5 +2831,51 @@ watch(groupedRoutes, (newGroups) => {
 
 .legend-box.level-4 {
   background-color: #216e39;
+}
+
+/* 健康监控状态条样式 */
+.health-route-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.2s;
+}
+
+.health-route-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.status-bar-container {
+  flex: 1;
+  max-width: 500px;
+  min-width: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-bar {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.status-dot {
+  width: 8px;
+  height: 20px;
+  border-radius: 2px;
+  transition: transform 0.15s;
+}
+
+.status-dot:hover {
+  transform: scaleY(1.3);
+}
+
+.status-dot.success {
+  background-color: #18a058;
+}
+
+.status-dot.fail {
+  background-color: #d03050;
 }
 </style>

@@ -25,13 +25,21 @@ type ModelRoute struct {
 // RequestLog 请求日志表结构
 type RequestLog struct {
 	ID             int64     `json:"id"`
-	Model          string    `json:"model"`
+	Model          string    `json:"model"`           // 请求的模型名
+	ProviderModel  string    `json:"provider_model"` // 实际使用的提供商模型
+	ProviderName   string    `json:"provider_name"`  // 提供商/路由名称
 	RouteID        int64     `json:"route_id"`
 	RequestTokens  int       `json:"request_tokens"`
 	ResponseTokens int       `json:"response_tokens"`
 	TotalTokens    int       `json:"total_tokens"`
 	Success        bool      `json:"success"`
 	ErrorMessage   string    `json:"error_message"`
+	Style          string    `json:"style"`           // 请求类型: openai, claude, gemini
+	UserAgent      string    `json:"user_agent"`      // 用户代理
+	RemoteIP       string    `json:"remote_ip"`       // 客户端IP
+	ProxyTimeMs    int64     `json:"proxy_time_ms"`   // 代理总耗时(毫秒)
+	FirstChunkMs   int64     `json:"first_chunk_ms"` // 首字节时间(毫秒)
+	IsStream       bool      `json:"is_stream"`       // 是否流式请求
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -106,12 +114,20 @@ func createTables(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS request_logs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		model TEXT NOT NULL,
+		provider_model TEXT,
+		provider_name TEXT,
 		route_id INTEGER,
 		request_tokens INTEGER DEFAULT 0,
 		response_tokens INTEGER DEFAULT 0,
 		total_tokens INTEGER DEFAULT 0,
 		success INTEGER DEFAULT 1,
 		error_message TEXT,
+		style TEXT,
+		user_agent TEXT,
+		remote_ip TEXT,
+		proxy_time_ms INTEGER DEFAULT 0,
+		first_chunk_ms INTEGER DEFAULT 0,
+		is_stream INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (route_id) REFERENCES model_routes(id) ON DELETE SET NULL
 	);
@@ -120,6 +136,9 @@ func createTables(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_request_logs_route_id ON request_logs(route_id);
 	CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at);
 	CREATE INDEX IF NOT EXISTS idx_request_logs_success ON request_logs(success);
+	CREATE INDEX IF NOT EXISTS idx_request_logs_provider_name ON request_logs(provider_name);
+	CREATE INDEX IF NOT EXISTS idx_request_logs_style ON request_logs(style);
+	CREATE INDEX IF NOT EXISTS idx_request_logs_user_agent ON request_logs(user_agent);
 
 	-- 每小时统计表（压缩后的数据）
 	CREATE TABLE IF NOT EXISTS hourly_stats (
@@ -177,6 +196,16 @@ func migrateDB(db *sql.DB) error {
 	// 检查 usage_summary 表是否存在所有必要的列
 	db.Exec(`ALTER TABLE usage_summary ADD COLUMN success_count INTEGER DEFAULT 0`)
 	db.Exec(`ALTER TABLE usage_summary ADD COLUMN fail_count INTEGER DEFAULT 0`)
+
+	// 添加 request_logs 的新字段（如果不存在）
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN provider_model TEXT`)
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN provider_name TEXT`)
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN style TEXT`)
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN user_agent TEXT`)
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN remote_ip TEXT`)
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN proxy_time_ms INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN first_chunk_ms INTEGER DEFAULT 0`)
+	db.Exec(`ALTER TABLE request_logs ADD COLUMN is_stream INTEGER DEFAULT 0`)
 
 	log.Info("Database migration completed")
 	return nil

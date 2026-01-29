@@ -37,6 +37,7 @@ const createWailsShim = () => {
     UpdateRoute: (id, name, model, apiUrl, apiKey, group, format) => 
       callService('UpdateRoute', id, name, model, apiUrl, apiKey, group, format),
     DeleteRoute: (id) => callService('DeleteRoute', id),
+    ToggleRoute: (id, enabled) => callService('ToggleRoute', id, enabled),
     
     // Statistics
     GetStats: () => callService('GetStats'),
@@ -59,6 +60,7 @@ const createWailsShim = () => {
     SetMinimizeToTray: (enabled) => callService('SetMinimizeToTray', enabled),
     SetAutoStart: (enabled) => callService('SetAutoStart', enabled),
     SetEnableFileLog: (enabled) => callService('SetEnableFileLog', enabled),
+    SetFallbackEnabled: (enabled) => callService('SetFallbackEnabled', enabled),
     
     // Remote models
     FetchRemoteModels: (apiUrl, apiKey) => callService('FetchRemoteModels', apiUrl, apiKey),
@@ -70,6 +72,13 @@ const createWailsShim = () => {
     // Database management
     CompressDatabase: () => callService('CompressDatabase'),
     GetUsageSummary: () => callService('GetUsageSummary'),
+
+    // Request logs
+    GetRequestLogs: (page, pageSize, model, style, success) =>
+      callService('GetRequestLogs', page, pageSize, model, style, success),
+
+    // Health monitoring
+    GetHealthStatus: () => callService('GetHealthStatus'),
   }
 
   // Create the window.go.main.App structure

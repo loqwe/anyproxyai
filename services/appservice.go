@@ -162,6 +162,11 @@ func (a *AppService) DeleteRoute(id int64) error {
 	return a.RouteService.DeleteRoute(id)
 }
 
+// ToggleRoute 启用/禁用路由
+func (a *AppService) ToggleRoute(id int64, enabled bool) error {
+	return a.RouteService.ToggleRoute(id, enabled)
+}
+
 // GetStats 获取统计信息
 func (a *AppService) GetStats() (StatsInfo, error) {
 	stats, err := a.RouteService.GetStats()
@@ -228,6 +233,7 @@ func (a *AppService) GetConfig() map[string]interface{} {
 		"minimizeToTray":        a.Config.MinimizeToTray,
 		"autoStart":             a.Config.AutoStart,
 		"enableFileLog":         a.Config.EnableFileLog,
+		"fallbackEnabled":       a.Config.FallbackEnabled,
 		"port":                  a.Config.Port,
 	}
 }
@@ -353,6 +359,20 @@ func (a *AppService) SetEnableFileLog(enabled bool) error {
 	return nil
 }
 
+// SetFallbackEnabled 设置是否启用故障转移
+func (a *AppService) SetFallbackEnabled(enabled bool) error {
+	log.Infof("Setting fallback enabled: %v", enabled)
+	a.Config.FallbackEnabled = enabled
+
+	if err := a.Config.Save(); err != nil {
+		log.Errorf("Failed to save config: %v", err)
+		return fmt.Errorf("failed to save config: %v", err)
+	}
+
+	log.Info("Fallback setting updated successfully")
+	return nil
+}
+
 // RestartApp 重启应用
 func (a *AppService) RestartApp() error {
 	log.Info("Restarting application...")
@@ -400,4 +420,122 @@ func (a *AppService) CompressDatabase() (map[string]interface{}, error) {
 // GetUsageSummary 获取用量汇总（周/年/总用量）
 func (a *AppService) GetUsageSummary() (map[string]interface{}, error) {
 	return a.RouteService.GetUsageSummary()
+}
+
+// RequestLogsResult 请求日志查询结果
+type RequestLogsResult struct {
+	Data     []map[string]interface{} `json:"data"`
+	Total    int64                    `json:"total"`
+	Page     int                      `json:"page"`
+	PageSize int                      `json:"page_size"`
+}
+
+// GetRequestLogs 获取请求日志（支持分页和筛选）
+func (a *AppService) GetRequestLogs(page, pageSize int, model, style, success string) (RequestLogsResult, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	// 构建筛选参数
+	filters := make(map[string]string)
+	if model != "" {
+		filters["model"] = model
+	}
+	if style != "" {
+		filters["style"] = style
+	}
+	if success != "" {
+		filters["success"] = success
+	}
+
+	logs, total, err := a.RouteService.GetRequestLogs(page, pageSize, filters)
+	if err != nil {
+		return RequestLogsResult{}, err
+	}
+
+	// 转换为 map 切片
+	data := make([]map[string]interface{}, len(logs))
+	for i, l := range logs {
+		data[i] = map[string]interface{}{
+			"id":              l.ID,
+			"model":           l.Model,
+			"provider_model":  l.ProviderModel,
+			"provider_name":   l.ProviderName,
+			"route_id":        l.RouteID,
+			"request_tokens":  l.RequestTokens,
+			"response_tokens": l.ResponseTokens,
+			"total_tokens":    l.TotalTokens,
+			"success":         l.Success,
+			"error_message":   l.ErrorMessage,
+			"style":           l.Style,
+			"user_agent":      l.UserAgent,
+			"remote_ip":       l.RemoteIP,
+			"proxy_time_ms":   l.ProxyTimeMs,
+			"first_chunk_ms":  l.FirstChunkMs,
+			"is_stream":       l.IsStream,
+			"created_at":      l.CreatedAt.Format("2006-01-02 15:04:05"),
+		}
+	}
+
+	return RequestLogsResult{
+		Data:     data,
+		Total:    int64(total),
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
+}
+
+// RouteHealthInfo represents health information for a single route (frontend binding)
+type RouteHealthInfo struct {
+	ID            int64   `json:"id"`
+	Name          string  `json:"name"`
+	Model         string  `json:"model"`
+	StatusHistory []bool  `json:"status_history"` // Last N requests, true=success, index 0 is oldest
+	SuccessRate   float64 `json:"success_rate"`
+	TotalRequests int     `json:"total_requests"`
+}
+
+// GroupHealthInfo represents health information for a group of routes (frontend binding)
+type GroupHealthInfo struct {
+	Group       string            `json:"group"`
+	Routes      []RouteHealthInfo `json:"routes"`
+	SuccessRate float64           `json:"success_rate"`
+	RouteCount  int               `json:"route_count"`
+}
+
+// GetHealthStatus 获取所有路由的健康状态（按分组）
+func (a *AppService) GetHealthStatus() ([]GroupHealthInfo, error) {
+	const historyCount = 50 // Display last 50 requests per route
+	
+	results, err := a.RouteService.GetHealthStatus(historyCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert from service types to AppService types
+	var groups []GroupHealthInfo
+	for _, g := range results {
+		var routes []RouteHealthInfo
+		for _, r := range g.Routes {
+			routes = append(routes, RouteHealthInfo{
+				ID:            r.ID,
+				Name:          r.Name,
+				Model:         r.Model,
+				StatusHistory: r.StatusHistory,
+				SuccessRate:   r.SuccessRate,
+				TotalRequests: r.TotalRequests,
+			})
+		}
+		groups = append(groups, GroupHealthInfo{
+			Group:       g.Group,
+			Routes:      routes,
+			SuccessRate: g.SuccessRate,
+			RouteCount:  g.RouteCount,
+		})
+	}
+
+	return groups, nil
 }

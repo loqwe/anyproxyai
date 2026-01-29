@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"openai-router-go/internal/config"
@@ -1121,6 +1122,52 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 			"content":      response.Content,
 			"tokens_used":  response.TokensUsed,
 			"raw_response": response.RawResponse,
+		})
+	})
+
+	// 请求日志 API - 获取请求日志列表（支持分页和筛选）
+	api.GET("/logs", func(c *gin.Context) {
+		// 解析分页参数
+		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+		pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+		if page < 1 {
+			page = 1
+		}
+		if pageSize < 1 || pageSize > 100 {
+			pageSize = 20
+		}
+
+		// 解析筛选参数
+		filters := make(map[string]string)
+		if model := c.Query("model"); model != "" {
+			filters["model"] = model
+		}
+		if providerName := c.Query("provider_name"); providerName != "" {
+			filters["provider_name"] = providerName
+		}
+		if style := c.Query("style"); style != "" {
+			filters["style"] = style
+		}
+		if success := c.Query("success"); success != "" {
+			filters["success"] = success
+		}
+
+		logs, total, err := routeService.GetRequestLogs(page, pageSize, filters)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": gin.H{
+					"message": "Failed to get request logs: " + err.Error(),
+					"type":    "internal_error",
+				},
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"data":      logs,
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
 		})
 	})
 

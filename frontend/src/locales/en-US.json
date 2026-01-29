@@ -3,6 +3,8 @@
     "home": "Home",
     "models": "Models",
     "stats": "Statistics",
+    "logs": "Request Logs",
+    "health": "Health",
     "settings": "Settings",
     "addRoute": "Add Route"
   },
@@ -84,7 +86,16 @@
     "cursorPath": "Cursor IDE endpoint path (auto-detect format)",
     "setRedirectSuccess": "Set as redirect target",
     "setRedirectFailed": "Failed to set redirect target",
-    "redirectTarget": "Redirect Target"
+    "redirectTarget": "Redirect Target",
+    "copyApiKey": "Copy API Key",
+    "editApiKey": "Edit API Key",
+    "randomApiKey": "Generate Random API Key",
+    "editApiKeyTitle": "Custom API Key",
+    "editApiKeyDesc": "Enter a custom API Key to access the local proxy service. It's recommended to use sk- prefix.",
+    "apiKeyPlaceholder": "Enter custom API Key, e.g., sk-xxx",
+    "apiKeySaved": "API Key saved",
+    "apiKeyRandomized": "API Key randomized",
+    "apiKeyRequired": "Please enter an API Key"
   },
   "models": {
     "title": "Model Route List (Grouped)",
@@ -105,6 +116,11 @@
     "setAsTarget": "Set as Redirect Target",
     "edit": "Edit",
     "delete": "Delete",
+    "enabled": "Enabled",
+    "enabledStatus": "Enabled",
+    "disabledStatus": "Disabled",
+    "routeEnabled": "Route enabled",
+    "routeDisabled": "Route disabled",
     "exportSuccess": "Export successful",
     "exportFailed": "Export failed",
     "importSuccess": "Import successful, {count} routes imported",
@@ -160,6 +176,10 @@
     "enableFileLogDesc": "When enabled, logs will be saved to log/ directory, organized by date",
     "fileLogEnabled": "File logging enabled",
     "fileLogDisabled": "File logging disabled",
+    "enableFallback": "Enable Fallback",
+    "enableFallbackDesc": "Automatically switch to other available routes when request fails (e.g., timeout, 5xx, 429 errors)",
+    "fallbackEnabled": "Fallback enabled",
+    "fallbackDisabled": "Fallback disabled",
     "apiPort": "API Port",
     "apiPortDesc": "Modify the API service port, requires restart to take effect",
     "portUpdated": "Port updated, please restart the application",
@@ -216,6 +236,28 @@
     "redirectConfigFailed": "Failed to save redirect config",
     "restartFailed": "Restart failed"
   },
+  "logs": {
+    "title": "Request Logs",
+    "filterModel": "Filter by model name",
+    "filterStyle": "API Format",
+    "filterStatus": "Status",
+    "clearFilter": "Clear Filters",
+    "time": "Time",
+    "model": "Request Model",
+    "providerModel": "Actual Model",
+    "provider": "Provider",
+    "style": "Format",
+    "inputTokens": "Input",
+    "outputTokens": "Output",
+    "proxyTime": "Response Time",
+    "status": "Status",
+    "stream": "Stream",
+    "success": "Success",
+    "failed": "Failed",
+    "noLogs": "No request logs",
+    "loadFailed": "Failed to load logs",
+    "unknownError": "Unknown error"
+  },
   "common": {
     "loading": "Loading...",
     "noData": "No data available",
@@ -225,5 +267,15 @@
     "info": "Info",
     "copy": "Copy",
     "other": "Other"
+  },
+  "health": {
+    "title": "Health Monitoring",
+    "successRate": "Success Rate",
+    "totalRequests": "Total Requests",
+    "recentRequests": "Last {count} requests",
+    "noData": "No request records",
+    "loadFailed": "Failed to load health status",
+    "routes": "Routes",
+    "model": "Model"
   }
 }

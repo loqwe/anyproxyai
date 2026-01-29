@@ -45,6 +45,13 @@ func setupFileLogging() (*os.File, error) {
 	today := time.Now().Format("2006-01-02")
 	logPath := filepath.Join(logDir, today+".log")
 
+	if wd, err := os.Getwd(); err == nil {
+		log.Infof("工作目录=%s", wd)
+	} else {
+		log.Warnf("获取工作目录失败: %v", err)
+	}
+	log.Infof("日志文件路径=%s", logPath)
+
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %v", err)
@@ -91,7 +98,7 @@ func main() {
 	log.SetFormatter(&log.TextFormatter{
 		FullTimestamp: true,
 	})
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.DebugLevel)
 
 	// 加载配置
 	cfg := config.LoadConfig()

@@ -13,6 +13,7 @@ type Config struct {
 	Port                  int    `json:"port"`
 	DatabasePath          string `json:"database_path"`
 	LocalAPIKey           string `json:"local_api_key"`
+	FallbackEnabled       bool   `json:"fallback_enabled"`
 	RedirectEnabled       bool   `json:"redirect_enabled"`
 	RedirectKeyword       string `json:"redirect_keyword"`
 	RedirectTargetModel   string `json:"redirect_target_model"`
@@ -33,6 +34,7 @@ func LoadConfig() *Config {
 		Port:                  5642,
 		DatabasePath:          "routes.db",
 		LocalAPIKey:           "sk-local-default-key",
+		FallbackEnabled:       true,
 		RedirectEnabled:       false,
 		RedirectKeyword:       "proxy_auto",
 		RedirectTargetModel:   "",
