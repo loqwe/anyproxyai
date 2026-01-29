@@ -824,6 +824,8 @@ func SetupAPIRouter(cfg *config.Config, routeService *service.RouteService, prox
 						headers[key] = values[0]
 					}
 				}
+				// 添加客户端 IP 用于 Traces
+				headers["X-Real-IP"] = c.ClientIP()
 
 				// 检查是否是流式请求
 				var reqData map[string]interface{}

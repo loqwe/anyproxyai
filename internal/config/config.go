@@ -22,6 +22,9 @@ type Config struct {
 	MinimizeToTray        bool   `json:"minimize_to_tray"`
 	AutoStart             bool   `json:"auto_start"`
 	EnableFileLog         bool   `json:"enable_file_log"`
+	TracesEnabled         bool   `json:"traces_enabled"`          // 是否启用对话追踪
+	TracesRetentionDays   int    `json:"traces_retention_days"`   // 对话保留天数
+	TracesSessionTimeout  int    `json:"traces_session_timeout"` // 会话超时时间(分钟)
 	Language              string `json:"language"`
 	configPath            string
 }
@@ -43,6 +46,9 @@ func LoadConfig() *Config {
 		MinimizeToTray:        true,
 		AutoStart:             false,
 		EnableFileLog:         false,
+		TracesEnabled:         false, // 默认关闭，因为会占用存储
+		TracesRetentionDays:   7,     // 默认保留7天
+		TracesSessionTimeout:  30,    // 默认30分钟超时
 		Language:              "en-US",
 		configPath:            configPath,
 	}

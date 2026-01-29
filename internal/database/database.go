@@ -71,6 +71,27 @@ type UsageSummary struct {
 	UpdatedAt      string `json:"updated_at"`      // 更新时间
 }
 
+// ConversationTrace 对话追踪表结构
+type ConversationTrace struct {
+	ID              int64     `json:"id"`
+	SessionID       string    `json:"session_id"`       // 会话ID (IP + 时间窗口生成)
+	RemoteIP        string    `json:"remote_ip"`        // 客户端IP
+	Model           string    `json:"model"`            // 请求模型
+	ProviderModel   string    `json:"provider_model"`   // 实际模型
+	ProviderName    string    `json:"provider_name"`    // 路由名称
+	RequestContent  string    `json:"request_content"`  // 完整请求内容 (JSON)
+	ResponseContent string    `json:"response_content"` // 完整响应内容 (JSON/流式拼接)
+	RequestTokens   int       `json:"request_tokens"`
+	ResponseTokens  int       `json:"response_tokens"`
+	TotalTokens     int       `json:"total_tokens"`
+	Success         bool      `json:"success"`
+	ErrorMessage    string    `json:"error_message"`
+	Style           string    `json:"style"`            // openai/claude/gemini
+	IsStream        bool      `json:"is_stream"`
+	ProxyTimeMs     int64     `json:"proxy_time_ms"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 func InitDB(dbPath string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -90,6 +111,21 @@ func InitDB(dbPath string) (*sql.DB, error) {
 
 	log.Info("Database initialized successfully")
 	return db, nil
+}
+
+func InitTraceDB(dbPath string) (*sql.DB, error) {
+	traceDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := createTraceTables(traceDB); err != nil {
+		traceDB.Close()
+		return nil, err
+	}
+
+	log.Info("Trace database initialized successfully")
+	return traceDB, nil
 }
 
 func createTables(db *sql.DB) error {
@@ -175,6 +211,38 @@ func createTables(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_usage_summary_type ON usage_summary(period_type);
 	CREATE INDEX IF NOT EXISTS idx_usage_summary_key ON usage_summary(period_key);
+	`
+
+	_, err := db.Exec(schema)
+	return err
+}
+
+func createTraceTables(db *sql.DB) error {
+	schema := `
+	CREATE TABLE IF NOT EXISTS conversation_traces (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL,
+		remote_ip TEXT NOT NULL,
+		model TEXT NOT NULL,
+		provider_model TEXT,
+		provider_name TEXT,
+		request_content TEXT,
+		response_content TEXT,
+		request_tokens INTEGER DEFAULT 0,
+		response_tokens INTEGER DEFAULT 0,
+		total_tokens INTEGER DEFAULT 0,
+		success INTEGER DEFAULT 1,
+		error_message TEXT,
+		style TEXT,
+		is_stream INTEGER DEFAULT 0,
+		proxy_time_ms INTEGER DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_traces_session ON conversation_traces(session_id);
+	CREATE INDEX IF NOT EXISTS idx_traces_ip ON conversation_traces(remote_ip);
+	CREATE INDEX IF NOT EXISTS idx_traces_created ON conversation_traces(created_at);
+	CREATE INDEX IF NOT EXISTS idx_traces_model ON conversation_traces(model);
 	`
 
 	_, err := db.Exec(schema)

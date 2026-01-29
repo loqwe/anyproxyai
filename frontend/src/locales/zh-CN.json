@@ -5,6 +5,7 @@
     "stats": "使用状态",
     "logs": "请求日志",
     "health": "健康监控",
+    "traces": "对话追踪",
     "settings": "设置",
     "addRoute": "添加路由"
   },
@@ -180,6 +181,12 @@
     "enableFallbackDesc": "当请求失败时自动切换到其他可用路由（如超时、5xx、429等错误）",
     "fallbackEnabled": "已启用故障转移",
     "fallbackDisabled": "已禁用故障转移",
+    "enableTraces": "启用对话追踪",
+    "enableTracesDesc": "记录完整的请求和响应内容，用于调试和问题排查",
+    "tracesEnabled": "已启用对话追踪",
+    "tracesDisabled": "已禁用对话追踪",
+    "tracesRetentionDays": "保留天数",
+    "days": "天",
     "apiPort": "API 端口",
     "apiPortDesc": "修改 API 服务端口，需要重启应用才能生效",
     "portUpdated": "端口已更新，请重启应用",
@@ -277,5 +284,23 @@
     "loadFailed": "加载健康状态失败",
     "routes": "路由",
     "model": "模型"
+  },
+  "traces": {
+    "title": "对话追踪",
+    "sessions": "会话列表",
+    "conversation": "对话内容",
+    "messages": "条消息",
+    "noSessions": "暂无会话记录",
+    "noTraces": "暂无追踪记录",
+    "selectSession": "请选择左侧的会话查看详情",
+    "noMessages": "暂无对话记录",
+    "loadFailed": "加载失败",
+    "confirmClearAll": "确定要清空所有对话记录吗？此操作不可恢复。",
+    "cleared": "已清空对话记录",
+    "clearFailed": "清空失败",
+    "request": "请求内容",
+    "response": "响应内容",
+    "search": "搜索模型/IP/内容",
+    "autoRefresh": "自动刷新"
   }
 }

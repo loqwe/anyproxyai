@@ -71,6 +71,18 @@
             </template>
             {{ t('nav.health') }}
           </n-button>
+
+          <n-button
+            size="small"
+            :type="currentPage === 'traces' ? 'primary' : 'default'"
+            :ghost="currentPage !== 'traces'"
+            @click="currentPage = 'traces'; loadAllTraces()"
+          >
+            <template #icon>
+              <n-icon><ChatboxEllipsesIcon /></n-icon>
+            </template>
+            {{ t('nav.traces') }}
+          </n-button>
         </div>
 
         <div style="display: flex; align-items: center; gap: 16px;">
@@ -753,6 +765,107 @@
           </n-card>
         </div>
 
+        <!-- Traces Page -->
+        <div v-if="currentPage === 'traces'">
+          <n-card :title="'💬 ' + t('traces.title')" :bordered="false">
+            <template #header-extra>
+              <n-space align="center">
+                <n-input
+                  v-model:value="tracesSearchQuery"
+                  :placeholder="t('traces.search')"
+                  clearable
+                  size="small"
+                  style="width: 200px;"
+                  @update:value="debounceSearchTraces"
+                >
+                  <template #prefix>
+                    <n-icon><SearchIcon /></n-icon>
+                  </template>
+                </n-input>
+                <n-checkbox v-model:checked="tracesAutoRefresh" size="small" @update:checked="toggleTracesAutoRefresh">
+                  {{ t('traces.autoRefresh') }}
+                </n-checkbox>
+                <n-button quaternary circle size="small" @click="loadAllTraces" :loading="tracesLoading">
+                  <template #icon>
+                    <n-icon><RefreshIcon /></n-icon>
+                  </template>
+                </n-button>
+                <n-popconfirm @positive-click="clearAllTraces">
+                  <template #trigger>
+                    <n-button quaternary circle size="small" type="error">
+                      <template #icon>
+                        <n-icon><TrashIcon /></n-icon>
+                      </template>
+                    </n-button>
+                  </template>
+                  {{ t('traces.confirmClearAll') }}
+                </n-popconfirm>
+              </n-space>
+            </template>
+
+            <n-spin :show="tracesLoading">
+              <n-list bordered style="max-height: calc(100vh - 320px); overflow-y: auto;">
+                <n-list-item
+                  v-for="trace in filteredTraces"
+                  :key="trace.id"
+                  style="padding: 12px 16px;"
+                >
+                  <n-space vertical :size="8" style="width: 100%;">
+                    <!-- 头部信息 -->
+                    <n-space align="center" justify="space-between" style="width: 100%;">
+                      <n-space align="center" size="small">
+                        <n-tag :type="trace.success ? 'success' : 'error'" size="small" round>
+                          {{ trace.success ? '✓' : '✗' }}
+                        </n-tag>
+                        <n-text strong style="font-size: 14px;">{{ trace.created_at }}</n-text>
+                        <n-text depth="3" style="font-size: 12px;">{{ trace.remote_ip }}</n-text>
+                        <n-text depth="3" style="font-size: 12px;">{{ trace.proxy_time_ms }}ms</n-text>
+                      </n-space>
+                      <n-space align="center" size="small">
+                        <n-text strong>{{ trace.model }}</n-text>
+                        <n-tag v-if="trace.is_stream" size="tiny" type="warning">流式</n-tag>
+                        <n-text depth="3" style="font-size: 12px;">{{ trace.provider_name }}</n-text>
+                      </n-space>
+                    </n-space>
+
+                    <!-- 详情展开 -->
+                    <n-collapse arrow-placement="left" :default-expanded-names="[]">
+                      <n-collapse-item :title="t('traces.request')" name="request">
+                        <n-code :code="formatJson(trace.request_content)" language="json" word-wrap style="max-height: 300px; overflow-y: auto;" />
+                      </n-collapse-item>
+                      <n-collapse-item :title="t('traces.response')" name="response">
+                        <n-code :code="formatJson(trace.response_content)" language="json" word-wrap style="max-height: 300px; overflow-y: auto;" />
+                      </n-collapse-item>
+                    </n-collapse>
+
+                    <!-- token 信息 -->
+                    <n-space v-if="trace.total_tokens > 0" size="small">
+                      <n-text depth="3" style="font-size: 11px;">tokens: {{ trace.request_tokens }}/{{ trace.response_tokens }}/{{ trace.total_tokens }}</n-text>
+                    </n-space>
+                    <n-text v-if="trace.error_message && !trace.success" type="error" style="font-size: 12px;">
+                      {{ trace.error_message.slice(0, 200) }}{{ trace.error_message.length > 200 ? '...' : '' }}
+                    </n-text>
+                  </n-space>
+                </n-list-item>
+                <n-empty v-if="allTraces.length === 0 && !tracesLoading" :description="t('traces.noTraces')" style="padding: 40px;" />
+              </n-list>
+            </n-spin>
+
+            <!-- 分页 -->
+            <n-space justify="center" style="margin-top: 16px;" v-if="allTracesTotal > 0">
+              <n-pagination
+                v-model:page="allTracesPage"
+                :page-size="allTracesPageSize"
+                :item-count="allTracesTotal"
+                show-size-picker
+                :page-sizes="[20, 50, 100]"
+                @update:page="loadAllTraces"
+                @update:page-size="handleTracesPageSizeChange"
+              />
+            </n-space>
+          </n-card>
+        </div>
+
         <!-- Settings Page -->
         <div v-if="currentPage === 'settings'">
           <n-card :title="'⚙️ ' + t('settings.title')" :bordered="false">
@@ -827,6 +940,29 @@
                   <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
                     {{ t('settings.enableFallbackDesc') }}
                   </n-text>
+
+                  <n-checkbox v-model:checked="settings.tracesEnabled" @update:checked="toggleTracesEnabled">
+                    {{ t('settings.enableTraces') }}
+                  </n-checkbox>
+                  <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
+                    {{ t('settings.enableTracesDesc') }}
+                  </n-text>
+
+                  <!-- Traces 保留天数 -->
+                  <div v-if="settings.tracesEnabled" style="margin-left: 24px; margin-top: 8px;">
+                    <n-space align="center">
+                      <n-text depth="2" style="font-size: 13px;">{{ t('settings.tracesRetentionDays') }}:</n-text>
+                      <n-input-number
+                        v-model:value="settings.tracesRetentionDays"
+                        :min="1"
+                        :max="365"
+                        size="small"
+                        style="width: 100px;"
+                        @blur="updateTracesRetentionDays"
+                      />
+                      <n-text depth="3" style="font-size: 12px;">{{ t('settings.days') }}</n-text>
+                    </n-space>
+                  </div>
 
                   <!-- API 端口设置 -->
                   <div style="margin-top: 16px;">
@@ -1054,6 +1190,7 @@ import {
   CloseCircle as FailIcon,
   Search as SearchIcon,
   Pulse as PulseIcon,
+  ChatboxEllipses as ChatboxEllipsesIcon,
 } from '@vicons/ionicons5'
 import AddRouteModal from './components/AddRouteModal.vue'
 import EditRouteModal from './components/EditRouteModal.vue'
@@ -1138,6 +1275,8 @@ const settings = ref({
   minimizeToTray: false,
   enableFileLog: false,
   fallbackEnabled: true,
+  tracesEnabled: false,
+  tracesRetentionDays: 7,
   port: 5642,
 })
 
@@ -1252,6 +1391,33 @@ const toggleFallbackEnabled = async (enabled) => {
   } catch (error) {
     showMessage("error", t('messages.settingFailed') + ': ' + error)
     settings.value.fallbackEnabled = !enabled // 恢复状态
+  }
+}
+
+// 切换 Traces 启用
+const toggleTracesEnabled = async (enabled) => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  try {
+    await window.go.main.App.SetTracesEnabled(enabled)
+    showMessage("success", enabled ? t('settings.tracesEnabled') : t('settings.tracesDisabled'))
+  } catch (error) {
+    showMessage("error", t('messages.settingFailed') + ': ' + error)
+    settings.value.tracesEnabled = !enabled
+  }
+}
+
+// 更新 Traces 保留天数
+const updateTracesRetentionDays = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    return
+  }
+  try {
+    await window.go.main.App.SetTracesRetentionDays(settings.value.tracesRetentionDays)
+  } catch (error) {
+    showMessage("error", t('messages.settingFailed') + ': ' + error)
   }
 }
 
@@ -1952,6 +2118,110 @@ const loadHealthStatus = async () => {
   }
 }
 
+// ========== Traces 对话追踪相关 ==========
+const allTraces = ref([])
+const allTracesPage = ref(1)
+const allTracesPageSize = ref(20)
+const allTracesTotal = ref(0)
+const tracesLoading = ref(false)
+const tracesSearchQuery = ref('')
+const tracesAutoRefresh = ref(false)
+let tracesAutoRefreshTimer = null
+let tracesSearchTimer = null
+
+// 过滤后的 traces
+const filteredTraces = computed(() => {
+  if (!tracesSearchQuery.value) {
+    return allTraces.value
+  }
+  const query = tracesSearchQuery.value.toLowerCase()
+  return allTraces.value.filter(trace => 
+    trace.model?.toLowerCase().includes(query) ||
+    trace.provider_name?.toLowerCase().includes(query) ||
+    trace.remote_ip?.includes(query) ||
+    trace.request_content?.toLowerCase().includes(query) ||
+    trace.response_content?.toLowerCase().includes(query)
+  )
+})
+
+// 加载所有 trace 记录
+const loadAllTraces = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  tracesLoading.value = true
+  try {
+    const data = await window.go.main.App.GetAllTraces(allTracesPage.value, allTracesPageSize.value)
+    allTraces.value = data.traces || []
+    allTracesTotal.value = data.total || 0
+  } catch (error) {
+    console.error('加载 Traces 失败:', error)
+    showMessage("error", t('traces.loadFailed') + ': ' + error)
+    allTraces.value = []
+  } finally {
+    tracesLoading.value = false
+  }
+}
+
+// 防抖搜索
+const debounceSearchTraces = () => {
+  if (tracesSearchTimer) {
+    clearTimeout(tracesSearchTimer)
+  }
+  tracesSearchTimer = setTimeout(() => {
+    // 搜索已经通过 computed 实现，不需要额外操作
+  }, 300)
+}
+
+// 切换自动刷新
+const toggleTracesAutoRefresh = (enabled) => {
+  if (enabled) {
+    tracesAutoRefreshTimer = setInterval(() => {
+      loadAllTraces()
+    }, 5000)
+  } else {
+    if (tracesAutoRefreshTimer) {
+      clearInterval(tracesAutoRefreshTimer)
+      tracesAutoRefreshTimer = null
+    }
+  }
+}
+
+// 处理每页数量变化
+const handleTracesPageSizeChange = (pageSize) => {
+  allTracesPageSize.value = pageSize
+  allTracesPage.value = 1
+  loadAllTraces()
+}
+
+// 清除所有 Traces
+const clearAllTraces = async () => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    return
+  }
+  try {
+    const deleted = await window.go.main.App.ClearAllTraces()
+    showMessage("success", t('traces.cleared') + `: ${deleted}`)
+    allTraces.value = []
+    allTracesTotal.value = 0
+    await loadAllTraces()
+  } catch (error) {
+    showMessage("error", t('traces.clearFailed') + ': ' + error)
+  }
+}
+
+// 格式化 JSON
+const formatJson = (str) => {
+  if (!str) return ''
+  try {
+    const obj = JSON.parse(str)
+    return JSON.stringify(obj, null, 2)
+  } catch (e) {
+    return str
+  }
+}
+
 // Config
 const config = ref({
   localApiKey: '',
@@ -2325,6 +2595,8 @@ const loadConfig = async () => {
     settings.value.autoStart = data.autoStart || false
     settings.value.enableFileLog = data.enableFileLog || false
     settings.value.fallbackEnabled = data.fallbackEnabled !== false // 默认启用
+    settings.value.tracesEnabled = data.tracesEnabled || false
+    settings.value.tracesRetentionDays = data.tracesRetentionDays || 7
     settings.value.port = data.port || 5642
     console.log('Config loaded:', config.value)
   } catch (error) {

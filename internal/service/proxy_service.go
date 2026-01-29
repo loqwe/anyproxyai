@@ -96,6 +96,47 @@ func NewProxyService(routeService *RouteService, cfg *config.Config) *ProxyServi
 	}
 }
 
+// SaveTraceIfEnabled 如果启用了 Traces，保存对话记录
+func (s *ProxyService) SaveTraceIfEnabled(remoteIP, model, providerModel, providerName string,
+	requestContent, responseContent string, requestTokens, responseTokens, totalTokens int,
+	success bool, errorMessage, style string, isStream bool, proxyTimeMs int64) {
+
+	// 检查是否启用 Traces
+	if s.config == nil || !s.config.TracesEnabled {
+		return
+	}
+
+	// 获取或创建会话ID
+	sessionId := s.routeService.GetOrCreateSessionId(remoteIP, s.config.TracesSessionTimeout)
+
+	// 创建 Trace 记录
+	trace := &database.ConversationTrace{
+		SessionID:       sessionId,
+		RemoteIP:        remoteIP,
+		Model:           model,
+		ProviderModel:   providerModel,
+		ProviderName:    providerName,
+		RequestContent:  requestContent,
+		ResponseContent: responseContent,
+		RequestTokens:   requestTokens,
+		ResponseTokens:  responseTokens,
+		TotalTokens:     totalTokens,
+		Success:         success,
+		ErrorMessage:    errorMessage,
+		Style:           style,
+		IsStream:        isStream,
+		ProxyTimeMs:     proxyTimeMs,
+		CreatedAt:       time.Now(),
+	}
+
+	// 异步保存，不阻塞主流程
+	go func() {
+		if err := s.routeService.SaveTrace(trace); err != nil {
+			log.Warnf("Failed to save trace: %v", err)
+		}
+	}()
+}
+
 // shouldFallback 判断错误是否应该触发 Fallback 切换到下一个路由
 // 返回 true 表示应该尝试下一个路由，false 表示不应该重试
 func shouldFallback(statusCode int, err error) bool {
@@ -177,6 +218,11 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 	}
 	log.Infof("Request body: %s", string(requestBody))
 	log.Infof("=== PROXY REQUEST DETAILS ===")
+
+	remoteIP := headers["X-Real-IP"]
+	if remoteIP == "" {
+		remoteIP = "unknown"
+	}
 
 	// 提取真实的模型名（处理 Gemini streamGenerateContent 的情况）
 	realModel := model
@@ -307,6 +353,14 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 				IsStream:      false,
 			})
 
+			s.SaveTraceIfEnabled(
+				remoteIP, model, route.Model, route.Name,
+				string(requestBody), "",
+				0, 0, 0,
+				false, err.Error(), "openai", false,
+				time.Since(startTime).Milliseconds(),
+			)
+
 			if shouldFallback(0, err) && routeIndex < len(routes)-1 {
 				log.Warnf("Route %s failed with network error: %v, trying fallback...", route.Name, err)
 				lastErr = err
@@ -330,6 +384,15 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 				ProxyTimeMs:   time.Since(startTime).Milliseconds(),
 				IsStream:      false,
 			})
+
+			s.SaveTraceIfEnabled(
+				remoteIP, model, route.Model, route.Name,
+				string(requestBody), "",
+				0, 0, 0,
+				false, err.Error(), "openai", false,
+				time.Since(startTime).Milliseconds(),
+			)
+
 			lastErr = err
 			lastStatusCode = http.StatusInternalServerError
 			if routeIndex < len(routes)-1 {
@@ -359,6 +422,15 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 				ProxyTimeMs:   time.Since(startTime).Milliseconds(),
 				IsStream:      false,
 			})
+
+			s.SaveTraceIfEnabled(
+				remoteIP, model, route.Model, route.Name,
+				string(requestBody), string(responseBody),
+				0, 0, 0,
+				false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(responseBody)), "openai", false,
+				time.Since(startTime).Milliseconds(),
+			)
+
 			log.Warnf("Route %s failed with status %d, trying fallback...", route.Name, resp.StatusCode)
 			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(responseBody))
 			lastStatusCode = resp.StatusCode
@@ -422,6 +494,14 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 				ProxyTimeMs:   time.Since(startTime).Milliseconds(),
 				IsStream:      false,
 			})
+
+			s.SaveTraceIfEnabled(
+				remoteIP, model, route.Model, route.Name,
+				string(requestBody), string(responseBody),
+				0, 0, 0,
+				false, string(responseBody), "openai", false,
+				time.Since(startTime).Milliseconds(),
+			)
 		}
 
 		// 如果使用了适配器，转换响应
@@ -441,6 +521,40 @@ func (s *ProxyService) ProxyRequest(requestBody []byte, headers map[string]strin
 				}
 			}
 		}
+
+		// 记录 Trace（如果启用）
+		// 解析 token 数量用于 trace
+		var tracePromptTokens, traceCompletionTokens, traceTotalTokens int
+		var traceRespData map[string]interface{}
+		if err := json.Unmarshal(responseBody, &traceRespData); err == nil {
+			if usage, ok := traceRespData["usage"].(map[string]interface{}); ok {
+				if v, ok := usage["prompt_tokens"].(float64); ok {
+					tracePromptTokens = int(v)
+				}
+				if v, ok := usage["completion_tokens"].(float64); ok {
+					traceCompletionTokens = int(v)
+				}
+				if v, ok := usage["total_tokens"].(float64); ok {
+					traceTotalTokens = int(v)
+				}
+				if v, ok := usage["input_tokens"].(float64); ok && tracePromptTokens == 0 {
+					tracePromptTokens = int(v)
+				}
+				if v, ok := usage["output_tokens"].(float64); ok && traceCompletionTokens == 0 {
+					traceCompletionTokens = int(v)
+				}
+				if traceTotalTokens == 0 {
+					traceTotalTokens = tracePromptTokens + traceCompletionTokens
+				}
+			}
+		}
+		s.SaveTraceIfEnabled(
+			remoteIP, model, route.Model, route.Name,
+			string(requestBody), string(responseBody),
+			tracePromptTokens, traceCompletionTokens, traceTotalTokens,
+			resp.StatusCode == http.StatusOK, "", "openai", false,
+			time.Since(startTime).Milliseconds(),
+		)
 
 		return responseBody, resp.StatusCode, nil
 	}
@@ -480,6 +594,11 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 		}
 	}
 	log.Infof("Stream request body: %s", string(requestBody))
+
+	remoteIP := headers["X-Real-IP"]
+	if remoteIP == "" {
+		remoteIP = "unknown"
+	}
 
 	// 提取真实的模型名（处理 Gemini streamGenerateContent 的情况）
 	realModel := model
@@ -623,6 +742,14 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 				IsStream:      true,
 			})
 
+			s.SaveTraceIfEnabled(
+				remoteIP, model, route.Model, route.Name,
+				string(requestBody), "",
+				0, 0, 0,
+				false, err.Error(), "openai", true,
+				time.Since(startTime).Milliseconds(),
+			)
+
 			if shouldFallback(0, err) && routeIndex < len(routes)-1 {
 				log.Warnf("Stream route %s failed with network error: %v, trying fallback...", route.Name, err)
 				lastErr = err
@@ -649,6 +776,14 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 				IsStream:      true,
 			})
 
+			s.SaveTraceIfEnabled(
+				remoteIP, model, route.Model, route.Name,
+				string(requestBody), string(body),
+				0, 0, 0,
+				false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)), "openai", true,
+				time.Since(startTime).Milliseconds(),
+			)
+
 			if shouldFallback(resp.StatusCode, nil) && routeIndex < len(routes)-1 {
 				log.Warnf("Stream route %s failed with status %d, trying fallback...", route.Name, resp.StatusCode)
 				lastErr = fmt.Errorf("backend error: %d - %s", resp.StatusCode, string(body))
@@ -659,11 +794,26 @@ func (s *ProxyService) ProxyStreamRequest(requestBody []byte, headers map[string
 
 		// 连接成功，开始流式传输响应
 		log.Infof("Stream connection established with route %s", route.Name)
+
+		// 获取客户端 IP 用于 Trace
+		var streamErr error
 		if adapterName != "" {
-			return s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID)
+			streamErr = s.streamWithAdapter(resp.Body, writer, flusher, adapterName, model, route.ID, startTime)
 		} else {
-			return s.streamDirect(resp.Body, writer, flusher, model, route.ID)
+			streamErr = s.streamDirect(resp.Body, writer, flusher, model, route.ID, startTime)
 		}
+
+		// 记录流式请求的 Trace（响应内容标记为流式，不保存完整内容）
+		s.SaveTraceIfEnabled(
+			remoteIP, model, route.Model, route.Name,
+			string(requestBody), "[流式响应]",
+			0, 0, 0,
+			streamErr == nil, func() string { if streamErr != nil { return streamErr.Error() }; return "" }(),
+			"openai", true,
+			time.Since(startTime).Milliseconds(),
+		)
+
+		return streamErr
 	}
 
 	// 所有路由都失败了

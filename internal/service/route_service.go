@@ -12,11 +12,19 @@ import (
 )
 
 type RouteService struct {
-	db *sql.DB
+	db      *sql.DB
+	traceDB *sql.DB
 }
 
-func NewRouteService(db *sql.DB) *RouteService {
-	return &RouteService{db: db}
+func NewRouteService(db *sql.DB, traceDB *sql.DB) *RouteService {
+	return &RouteService{db: db, traceDB: traceDB}
+}
+
+func (s *RouteService) getTraceDB() *sql.DB {
+	if s.traceDB != nil {
+		return s.traceDB
+	}
+	return s.db
 }
 
 // GetAllRoutes 获取所有路由
@@ -1394,4 +1402,473 @@ func (s *RouteService) GetHealthStatus(historyCount int) ([]GroupHealthInfo, err
 	}
 
 	return result, nil
+}
+
+// ==================== Trace 对话追踪相关方法 ====================
+
+// GetOrCreateSessionId 获取或创建会话ID
+// 同一 IP 在 timeoutMinutes 分钟内的请求归入同一会话
+func (s *RouteService) GetOrCreateSessionId(remoteIP string, timeoutMinutes int) string {
+	// 查询该 IP 最后一条记录
+	var lastSessionId string
+	var lastCreatedAt time.Time
+	traceDB := s.getTraceDB()
+	err := traceDB.QueryRow(`
+		SELECT session_id, created_at FROM conversation_traces 
+		WHERE remote_ip = ? 
+		ORDER BY created_at DESC LIMIT 1
+	`, remoteIP).Scan(&lastSessionId, &lastCreatedAt)
+
+	if err == sql.ErrNoRows {
+		// 没有记录，创建新会话
+		return s.generateSessionId(remoteIP)
+	}
+	if err != nil {
+		log.Warnf("GetOrCreateSessionId query error: %v", err)
+		return s.generateSessionId(remoteIP)
+	}
+
+	// 检查是否超时
+	elapsed := time.Since(lastCreatedAt)
+	if elapsed > time.Duration(timeoutMinutes)*time.Minute {
+		// 超时，创建新会话
+		return s.generateSessionId(remoteIP)
+	}
+
+	// 未超时，复用旧会话
+	return lastSessionId
+}
+
+// generateSessionId 生成会话ID
+func (s *RouteService) generateSessionId(remoteIP string) string {
+	// 使用 IP + 时间戳 生成唯一ID
+	timestamp := time.Now().UnixNano()
+	data := fmt.Sprintf("%s-%d", remoteIP, timestamp)
+	// 简单的哈希生成
+	hash := fmt.Sprintf("%x", data)
+	if len(hash) > 16 {
+		hash = hash[:16]
+	}
+	return fmt.Sprintf("sess_%s_%d", hash, timestamp%100000)
+}
+
+// parseTraceTime parses created_at stored in SQLite.
+// It supports:
+// 1) "2006-01-02 15:04:05" (preferred)
+// 2) Go time.Time String() with/without monotonic part
+func parseTraceTime(raw string) (time.Time, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return time.Time{}, nil
+	}
+
+	// Strip Go monotonic clock part: " m=+..."
+	if idx := strings.Index(v, " m="); idx >= 0 {
+		v = strings.TrimSpace(v[:idx])
+	}
+
+	// Preferred storage format (local time)
+	if t, err := time.ParseInLocation("2006-01-02 15:04:05", v, time.Local); err == nil {
+		return t, nil
+	}
+
+	// RFC3339
+	if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+		return t, nil
+	}
+
+	// Go time.Time String() format without monotonic
+	if t, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", v); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05 -0700 MST", v); err == nil {
+		return t, nil
+	}
+
+	return time.Time{}, fmt.Errorf("unsupported trace time format: %q", raw)
+}
+
+func normalizeTraceTimeForInsert(raw interface{}) string {
+	switch v := raw.(type) {
+	case time.Time:
+		if v.IsZero() {
+			return time.Now().Format("2006-01-02 15:04:05")
+		}
+		return v.Format("2006-01-02 15:04:05")
+	case []byte:
+		return normalizeTraceTimeForInsert(string(v))
+	case string:
+		if v == "" {
+			return time.Now().Format("2006-01-02 15:04:05")
+		}
+		if t, err := parseTraceTime(v); err == nil && !t.IsZero() {
+			return t.Format("2006-01-02 15:04:05")
+		}
+		return v
+	default:
+		return time.Now().Format("2006-01-02 15:04:05")
+	}
+}
+
+// SaveTrace 保存对话记录
+func (s *RouteService) SaveTrace(trace *database.ConversationTrace) error {
+	query := `INSERT INTO conversation_traces 
+		(session_id, remote_ip, model, provider_model, provider_name, 
+		 request_content, response_content, request_tokens, response_tokens, total_tokens,
+		 success, error_message, style, is_stream, proxy_time_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	createdAt := trace.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	// Store in a SQLite-friendly format so queries and scans work reliably.
+	createdAtStr := createdAt.Format("2006-01-02 15:04:05")
+
+	traceDB := s.getTraceDB()
+	_, err := traceDB.Exec(query,
+		trace.SessionID, trace.RemoteIP, trace.Model, trace.ProviderModel, trace.ProviderName,
+		trace.RequestContent, trace.ResponseContent, trace.RequestTokens, trace.ResponseTokens, trace.TotalTokens,
+		trace.Success, trace.ErrorMessage, trace.Style, trace.IsStream, trace.ProxyTimeMs, createdAtStr)
+
+	if err != nil {
+		log.Errorf("SaveTrace error: %v", err)
+		return err
+	}
+	return nil
+}
+
+// TraceSessions 会话列表结果
+type TraceSessions struct {
+	SessionID    string    `json:"session_id"`
+	RemoteIP     string    `json:"remote_ip"`
+	MessageCount int       `json:"message_count"`
+	FirstTime    time.Time `json:"first_time"`
+	LastTime     time.Time `json:"last_time"`
+	Models       string    `json:"models"` // 逗号分隔的模型列表
+}
+
+// GetTraceSessions 获取会话列表
+func (s *RouteService) GetTraceSessions(page, pageSize int) ([]TraceSessions, int64, error) {
+	offset := (page - 1) * pageSize
+
+	// 获取总数
+	var total int64
+	traceDB := s.getTraceDB()
+	err := traceDB.QueryRow(`SELECT COUNT(DISTINCT session_id) FROM conversation_traces`).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 获取会话列表
+	query := `
+		SELECT 
+			session_id,
+			remote_ip,
+			COUNT(*) as message_count,
+			MIN(created_at) as first_time,
+			MAX(created_at) as last_time,
+			GROUP_CONCAT(DISTINCT model) as models
+		FROM conversation_traces
+		GROUP BY session_id
+		ORDER BY last_time DESC
+		LIMIT ? OFFSET ?
+	`
+
+	rows, err := traceDB.Query(query, pageSize, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var sessions []TraceSessions
+	for rows.Next() {
+		var session TraceSessions
+		var firstTimeRaw, lastTimeRaw string
+		err := rows.Scan(&session.SessionID, &session.RemoteIP, &session.MessageCount,
+			&firstTimeRaw, &lastTimeRaw, &session.Models)
+		if err != nil {
+			log.Warnf("GetTraceSessions scan error: %v", err)
+			continue
+		}
+
+		if t, err := parseTraceTime(firstTimeRaw); err == nil {
+			session.FirstTime = t
+		} else {
+			log.Warnf("GetTraceSessions parse first_time error: %v", err)
+		}
+		if t, err := parseTraceTime(lastTimeRaw); err == nil {
+			session.LastTime = t
+		} else {
+			log.Warnf("GetTraceSessions parse last_time error: %v", err)
+		}
+
+		sessions = append(sessions, session)
+	}
+
+	return sessions, total, nil
+}
+
+// GetTracesBySession 获取会话内所有对话
+func (s *RouteService) GetTracesBySession(sessionId string) ([]database.ConversationTrace, error) {
+	query := `
+		SELECT id, session_id, remote_ip, model, provider_model, provider_name,
+		       request_content, response_content, request_tokens, response_tokens, total_tokens,
+		       success, error_message, style, is_stream, proxy_time_ms, created_at
+		FROM conversation_traces
+		WHERE session_id = ?
+		ORDER BY created_at DESC
+	`
+
+	traceDB := s.getTraceDB()
+	rows, err := traceDB.Query(query, sessionId)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var traces []database.ConversationTrace
+	for rows.Next() {
+		var trace database.ConversationTrace
+		var createdAtRaw string
+		err := rows.Scan(&trace.ID, &trace.SessionID, &trace.RemoteIP, &trace.Model,
+			&trace.ProviderModel, &trace.ProviderName, &trace.RequestContent, &trace.ResponseContent,
+			&trace.RequestTokens, &trace.ResponseTokens, &trace.TotalTokens,
+			&trace.Success, &trace.ErrorMessage, &trace.Style, &trace.IsStream, &trace.ProxyTimeMs, &createdAtRaw)
+		if err != nil {
+			log.Warnf("GetTracesBySession scan error: %v", err)
+			continue
+		}
+
+		if t, err := parseTraceTime(createdAtRaw); err == nil {
+			trace.CreatedAt = t
+		} else {
+			log.Warnf("GetTracesBySession parse created_at error: %v", err)
+		}
+
+		traces = append(traces, trace)
+	}
+
+	return traces, nil
+}
+
+// ClearTraces 清理过期对话记录
+func (s *RouteService) ClearTraces(beforeDays int) (int64, error) {
+	query := `DELETE FROM conversation_traces WHERE created_at < datetime('now', 'localtime', ? || ' days')`
+	traceDB := s.getTraceDB()
+	result, err := traceDB.Exec(query, fmt.Sprintf("-%d", beforeDays))
+	if err != nil {
+		log.Errorf("ClearTraces error: %v", err)
+		return 0, err
+	}
+
+	deleted, _ := result.RowsAffected()
+	log.Infof("Cleared %d traces older than %d days", deleted, beforeDays)
+	return deleted, nil
+}
+
+// ClearAllTraces 清理所有对话记录
+func (s *RouteService) ClearAllTraces() (int64, error) {
+	traceDB := s.getTraceDB()
+	result, err := traceDB.Exec(`DELETE FROM conversation_traces`)
+	if err != nil {
+		log.Errorf("ClearAllTraces error: %v", err)
+		return 0, err
+	}
+
+	deleted, _ := result.RowsAffected()
+	log.Infof("Cleared all %d traces", deleted)
+	return deleted, nil
+}
+
+// GetTracesCount 获取对话记录总数
+func (s *RouteService) GetTracesCount() (int64, error) {
+	var count int64
+	traceDB := s.getTraceDB()
+	err := traceDB.QueryRow(`SELECT COUNT(*) FROM conversation_traces`).Scan(&count)
+	return count, err
+}
+
+// GetAllTraces 获取所有 trace 记录（按时间倒序，分页）
+func (s *RouteService) GetAllTraces(page, pageSize int) ([]database.ConversationTrace, int64, error) {
+	offset := (page - 1) * pageSize
+	traceDB := s.getTraceDB()
+
+	var total int64
+	if err := traceDB.QueryRow(`SELECT COUNT(*) FROM conversation_traces`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `
+		SELECT id, session_id, remote_ip, model, provider_model, provider_name,
+		       request_content, response_content, request_tokens, response_tokens, total_tokens,
+		       success, error_message, style, is_stream, proxy_time_ms, created_at
+		FROM conversation_traces
+		ORDER BY created_at DESC
+		LIMIT ? OFFSET ?
+	`
+
+	rows, err := traceDB.Query(query, pageSize, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var traces []database.ConversationTrace
+	for rows.Next() {
+		var trace database.ConversationTrace
+		var createdAtRaw string
+		err := rows.Scan(&trace.ID, &trace.SessionID, &trace.RemoteIP, &trace.Model,
+			&trace.ProviderModel, &trace.ProviderName, &trace.RequestContent, &trace.ResponseContent,
+			&trace.RequestTokens, &trace.ResponseTokens, &trace.TotalTokens,
+			&trace.Success, &trace.ErrorMessage, &trace.Style, &trace.IsStream, &trace.ProxyTimeMs, &createdAtRaw)
+		if err != nil {
+			log.Warnf("GetAllTraces scan error: %v", err)
+			continue
+		}
+
+		if t, err := parseTraceTime(createdAtRaw); err == nil {
+			trace.CreatedAt = t
+		}
+
+		traces = append(traces, trace)
+	}
+
+	return traces, total, nil
+}
+
+// MigrateLegacyTraces 迁移旧 routes.db 中的对话追踪到 traces.db（复制，不删除）
+func (s *RouteService) MigrateLegacyTraces() (int64, error) {
+	if s.traceDB == nil || s.traceDB == s.db {
+		return 0, nil
+	}
+
+	var tableCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='conversation_traces'`).Scan(&tableCount); err != nil {
+		return 0, err
+	}
+	if tableCount == 0 {
+		return 0, nil
+	}
+
+	var targetCount int64
+	if err := s.traceDB.QueryRow(`SELECT COUNT(*) FROM conversation_traces`).Scan(&targetCount); err != nil {
+		return 0, err
+	}
+	if targetCount > 0 {
+		log.Infof("Trace DB already has %d records, skip legacy migration", targetCount)
+		return 0, nil
+	}
+
+	rows, err := s.db.Query(`
+		SELECT session_id, remote_ip, model, provider_model, provider_name,
+		       request_content, response_content, request_tokens, response_tokens, total_tokens,
+		       success, error_message, style, is_stream, proxy_time_ms, created_at
+		FROM conversation_traces
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	tx, err := s.traceDB.Begin()
+	if err != nil {
+		return 0, err
+	}
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO conversation_traces (
+			session_id, remote_ip, model, provider_model, provider_name,
+			request_content, response_content, request_tokens, response_tokens, total_tokens,
+			success, error_message, style, is_stream, proxy_time_ms, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	defer stmt.Close()
+
+	var migrated int64
+	for rows.Next() {
+		var sessionID, remoteIP, model, providerModel, providerName string
+		var requestContent, responseContent, errorMessage, style string
+		var requestTokens, responseTokens, totalTokens int
+		var success, isStream int
+		var proxyTimeMs int64
+		var createdAtRaw interface{}
+
+		if err := rows.Scan(
+			&sessionID, &remoteIP, &model, &providerModel, &providerName,
+			&requestContent, &responseContent, &requestTokens, &responseTokens, &totalTokens,
+			&success, &errorMessage, &style, &isStream, &proxyTimeMs, &createdAtRaw,
+		); err != nil {
+			_ = tx.Rollback()
+			return migrated, err
+		}
+
+		createdAt := normalizeTraceTimeForInsert(createdAtRaw)
+		if _, err := stmt.Exec(
+			sessionID, remoteIP, model, providerModel, providerName,
+			requestContent, responseContent, requestTokens, responseTokens, totalTokens,
+			success, errorMessage, style, isStream, proxyTimeMs, createdAt,
+		); err != nil {
+			_ = tx.Rollback()
+			return migrated, err
+		}
+		migrated++
+	}
+
+	if err := rows.Err(); err != nil {
+		_ = tx.Rollback()
+		return migrated, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return migrated, err
+	}
+
+	log.Infof("Migrated %d legacy traces into traces.db", migrated)
+	return migrated, nil
+}
+
+// DeleteLegacyTraces removes legacy conversation_traces from routes.db after safety checks.
+func (s *RouteService) DeleteLegacyTraces() (int64, error) {
+	if s.traceDB == nil || s.traceDB == s.db {
+		return 0, nil
+	}
+
+	var tableCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='conversation_traces'`).Scan(&tableCount); err != nil {
+		return 0, err
+	}
+	if tableCount == 0 {
+		return 0, nil
+	}
+
+	var sourceCount int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM conversation_traces`).Scan(&sourceCount); err != nil {
+		return 0, err
+	}
+	if sourceCount == 0 {
+		return 0, nil
+	}
+
+	var targetCount int64
+	if err := s.traceDB.QueryRow(`SELECT COUNT(*) FROM conversation_traces`).Scan(&targetCount); err != nil {
+		return 0, err
+	}
+	if targetCount < sourceCount {
+		return 0, fmt.Errorf("trace db count %d < legacy count %d, abort deletion", targetCount, sourceCount)
+	}
+
+	result, err := s.db.Exec(`DELETE FROM conversation_traces`)
+	if err != nil {
+		return 0, err
+	}
+
+	deleted, _ := result.RowsAffected()
+	log.Infof("Deleted %d legacy traces from routes.db", deleted)
+	return deleted, nil
 }

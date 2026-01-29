@@ -79,6 +79,20 @@ const createWailsShim = () => {
 
     // Health monitoring
     GetHealthStatus: () => callService('GetHealthStatus'),
+
+    // Traces 对话追踪
+    GetTracesEnabled: () => callService('GetTracesEnabled'),
+    SetTracesEnabled: (enabled) => callService('SetTracesEnabled', enabled),
+    GetTracesRetentionDays: () => callService('GetTracesRetentionDays'),
+    SetTracesRetentionDays: (days) => callService('SetTracesRetentionDays', days),
+    GetTracesSessionTimeout: () => callService('GetTracesSessionTimeout'),
+    SetTracesSessionTimeout: (minutes) => callService('SetTracesSessionTimeout', minutes),
+    GetTraceSessions: (page, pageSize) => callService('GetTraceSessions', page, pageSize),
+    GetTracesBySession: (sessionID) => callService('GetTracesBySession', sessionID),
+    GetAllTraces: (page, pageSize) => callService('GetAllTraces', page, pageSize),
+    ClearOldTraces: (beforeDays) => callService('ClearOldTraces', beforeDays),
+    ClearAllTraces: () => callService('ClearAllTraces'),
+    GetTracesCount: () => callService('GetTracesCount'),
   }
 
   // Create the window.go.main.App structure

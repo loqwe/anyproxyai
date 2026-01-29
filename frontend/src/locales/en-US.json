@@ -5,6 +5,7 @@
     "stats": "Statistics",
     "logs": "Request Logs",
     "health": "Health",
+    "traces": "Traces",
     "settings": "Settings",
     "addRoute": "Add Route"
   },
@@ -180,6 +181,12 @@
     "enableFallbackDesc": "Automatically switch to other available routes when request fails (e.g., timeout, 5xx, 429 errors)",
     "fallbackEnabled": "Fallback enabled",
     "fallbackDisabled": "Fallback disabled",
+    "enableTraces": "Enable Conversation Tracing",
+    "enableTracesDesc": "Record complete request and response content for debugging and troubleshooting",
+    "tracesEnabled": "Conversation tracing enabled",
+    "tracesDisabled": "Conversation tracing disabled",
+    "tracesRetentionDays": "Retention period",
+    "days": "days",
     "apiPort": "API Port",
     "apiPortDesc": "Modify the API service port, requires restart to take effect",
     "portUpdated": "Port updated, please restart the application",
@@ -277,5 +284,23 @@
     "loadFailed": "Failed to load health status",
     "routes": "Routes",
     "model": "Model"
+  },
+  "traces": {
+    "title": "Conversation Traces",
+    "sessions": "Sessions",
+    "conversation": "Conversation",
+    "messages": "messages",
+    "noSessions": "No sessions recorded",
+    "noTraces": "No trace records",
+    "selectSession": "Select a session from the left to view details",
+    "noMessages": "No conversation records",
+    "loadFailed": "Failed to load",
+    "confirmClearAll": "Are you sure you want to clear all conversation records? This action cannot be undone.",
+    "cleared": "Conversation records cleared",
+    "clearFailed": "Failed to clear",
+    "request": "Request Content",
+    "response": "Response Content",
+    "search": "Search model/IP/content",
+    "autoRefresh": "Auto refresh"
   }
 }

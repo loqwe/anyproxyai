@@ -234,6 +234,8 @@ func (a *AppService) GetConfig() map[string]interface{} {
 		"autoStart":             a.Config.AutoStart,
 		"enableFileLog":         a.Config.EnableFileLog,
 		"fallbackEnabled":       a.Config.FallbackEnabled,
+		"tracesEnabled":         a.Config.TracesEnabled,
+		"tracesRetentionDays":   a.Config.TracesRetentionDays,
 		"port":                  a.Config.Port,
 	}
 }
@@ -538,4 +540,217 @@ func (a *AppService) GetHealthStatus() ([]GroupHealthInfo, error) {
 	}
 
 	return groups, nil
+}
+
+// ================== Traces 相关方法 ==================
+
+// TraceSessionInfo 会话信息结构体（前端）
+type TraceSessionInfo struct {
+	SessionID     string `json:"session_id"`
+	RemoteIP      string `json:"remote_ip"`
+	TraceCount    int    `json:"trace_count"`
+	FirstTraceAt  string `json:"first_trace_at"`
+	LastTraceAt   string `json:"last_trace_at"`
+}
+
+// TraceDetailInfo 对话详情结构体（前端）
+type TraceDetailInfo struct {
+	ID              int64  `json:"id"`
+	SessionID       string `json:"session_id"`
+	RemoteIP        string `json:"remote_ip"`
+	Model           string `json:"model"`
+	ProviderModel   string `json:"provider_model"`
+	ProviderName    string `json:"provider_name"`
+	RequestContent  string `json:"request_content"`
+	ResponseContent string `json:"response_content"`
+	RequestTokens   int    `json:"request_tokens"`
+	ResponseTokens  int    `json:"response_tokens"`
+	TotalTokens     int    `json:"total_tokens"`
+	Success         bool   `json:"success"`
+	ErrorMessage    string `json:"error_message"`
+	Style           string `json:"style"`
+	IsStream        bool   `json:"is_stream"`
+	ProxyTimeMs     int64  `json:"proxy_time_ms"`
+	CreatedAt       string `json:"created_at"`
+}
+
+// GetTracesEnabled 获取 Traces 功能是否启用
+func (a *AppService) GetTracesEnabled() bool {
+	return a.Config.TracesEnabled
+}
+
+// SetTracesEnabled 设置 Traces 功能启用/禁用
+func (a *AppService) SetTracesEnabled(enabled bool) error {
+	a.Config.TracesEnabled = enabled
+	return a.Config.Save()
+}
+
+// GetTracesRetentionDays 获取 Traces 保留天数
+func (a *AppService) GetTracesRetentionDays() int {
+	return a.Config.TracesRetentionDays
+}
+
+// SetTracesRetentionDays 设置 Traces 保留天数
+func (a *AppService) SetTracesRetentionDays(days int) error {
+	if days < 1 {
+		days = 1
+	}
+	a.Config.TracesRetentionDays = days
+	return a.Config.Save()
+}
+
+// GetTracesSessionTimeout 获取 Traces 会话超时（分钟）
+func (a *AppService) GetTracesSessionTimeout() int {
+	return a.Config.TracesSessionTimeout
+}
+
+// SetTracesSessionTimeout 设置 Traces 会话超时（分钟）
+func (a *AppService) SetTracesSessionTimeout(minutes int) error {
+	if minutes < 1 {
+		minutes = 1
+	}
+	a.Config.TracesSessionTimeout = minutes
+	return a.Config.Save()
+}
+
+// TraceSessionsResult 会话列表结果
+type TraceSessionsResult struct {
+	Sessions []TraceSessionInfo `json:"sessions"`
+	Total    int64              `json:"total"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+}
+
+// GetTraceSessions 获取会话列表（分页）
+func (a *AppService) GetTraceSessions(page, pageSize int) (TraceSessionsResult, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+
+	sessions, total, err := a.RouteService.GetTraceSessions(page, pageSize)
+	if err != nil {
+		return TraceSessionsResult{}, err
+	}
+
+	result := make([]TraceSessionInfo, len(sessions))
+	for i, s := range sessions {
+		result[i] = TraceSessionInfo{
+			SessionID:    s.SessionID,
+			RemoteIP:     s.RemoteIP,
+			TraceCount:   s.MessageCount,
+			FirstTraceAt: s.FirstTime.Format("2006-01-02 15:04:05"),
+			LastTraceAt:  s.LastTime.Format("2006-01-02 15:04:05"),
+		}
+	}
+	return TraceSessionsResult{
+		Sessions: result,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
+}
+
+// GetTracesBySession 获取指定会话的对话详情
+func (a *AppService) GetTracesBySession(sessionID string) ([]TraceDetailInfo, error) {
+	traces, err := a.RouteService.GetTracesBySession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]TraceDetailInfo, len(traces))
+	for i, t := range traces {
+		result[i] = TraceDetailInfo{
+			ID:              t.ID,
+			SessionID:       t.SessionID,
+			RemoteIP:        t.RemoteIP,
+			Model:           t.Model,
+			ProviderModel:   t.ProviderModel,
+			ProviderName:    t.ProviderName,
+			RequestContent:  t.RequestContent,
+			ResponseContent: t.ResponseContent,
+			RequestTokens:   t.RequestTokens,
+			ResponseTokens:  t.ResponseTokens,
+			TotalTokens:     t.TotalTokens,
+			Success:         t.Success,
+			ErrorMessage:    t.ErrorMessage,
+			Style:           t.Style,
+			IsStream:        t.IsStream,
+			ProxyTimeMs:     t.ProxyTimeMs,
+			CreatedAt:       t.CreatedAt.Format("2006-01-02 15:04:05"),
+		}
+	}
+	return result, nil
+}
+
+// ClearOldTraces 清除过期的 Trace 记录
+func (a *AppService) ClearOldTraces(beforeDays int) (int64, error) {
+	if beforeDays < 0 {
+		beforeDays = a.Config.TracesRetentionDays
+	}
+	return a.RouteService.ClearTraces(beforeDays)
+}
+
+// ClearAllTraces 清除所有 Trace 记录
+func (a *AppService) ClearAllTraces() (int64, error) {
+	return a.RouteService.ClearAllTraces()
+}
+
+// GetTracesCount 获取 Trace 记录总数
+func (a *AppService) GetTracesCount() (int64, error) {
+	return a.RouteService.GetTracesCount()
+}
+
+// AllTracesResult 所有 trace 列表结果
+type AllTracesResult struct {
+	Traces   []TraceDetailInfo `json:"traces"`
+	Total    int64             `json:"total"`
+	Page     int               `json:"page"`
+	PageSize int               `json:"page_size"`
+}
+
+// GetAllTraces 获取所有 trace 记录（按时间倒序，分页）
+func (a *AppService) GetAllTraces(page, pageSize int) (AllTracesResult, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+
+	traces, total, err := a.RouteService.GetAllTraces(page, pageSize)
+	if err != nil {
+		return AllTracesResult{}, err
+	}
+
+	result := make([]TraceDetailInfo, len(traces))
+	for i, t := range traces {
+		result[i] = TraceDetailInfo{
+			ID:              t.ID,
+			SessionID:       t.SessionID,
+			RemoteIP:        t.RemoteIP,
+			Model:           t.Model,
+			ProviderModel:   t.ProviderModel,
+			ProviderName:    t.ProviderName,
+			RequestContent:  t.RequestContent,
+			ResponseContent: t.ResponseContent,
+			RequestTokens:   t.RequestTokens,
+			ResponseTokens:  t.ResponseTokens,
+			TotalTokens:     t.TotalTokens,
+			Success:         t.Success,
+			ErrorMessage:    t.ErrorMessage,
+			Style:           t.Style,
+			IsStream:        t.IsStream,
+			ProxyTimeMs:     t.ProxyTimeMs,
+			CreatedAt:       t.CreatedAt.Format("2006-01-02 15:04:05"),
+		}
+	}
+	return AllTracesResult{
+		Traces:   result,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
 }

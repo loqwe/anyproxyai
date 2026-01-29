@@ -130,8 +130,31 @@ func main() {
 	}
 	defer db.Close()
 
+	traceDBPath := "traces.db"
+	if cfg.DatabasePath != "" {
+		traceDBPath = filepath.Join(filepath.Dir(cfg.DatabasePath), "traces.db")
+	}
+	traceDB, err := database.InitTraceDB(traceDBPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize trace database: %v", err)
+	}
+	defer traceDB.Close()
+
 	// 创建服务
-	routeService := service.NewRouteService(db)
+	routeService := service.NewRouteService(db, traceDB)
+
+	if migrated, err := routeService.MigrateLegacyTraces(); err != nil {
+		log.Warnf("Legacy trace migration failed: %v", err)
+	} else if migrated > 0 {
+		log.Infof("Legacy traces migrated: %d", migrated)
+	}
+
+	if deleted, err := routeService.DeleteLegacyTraces(); err != nil {
+		log.Warnf("Legacy trace deletion failed: %v", err)
+	} else if deleted > 0 {
+		log.Infof("Legacy traces deleted: %d", deleted)
+	}
+
 	proxyService := service.NewProxyService(routeService, cfg)
 
 	// 初始化开机自启动管理器
