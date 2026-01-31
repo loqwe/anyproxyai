@@ -613,9 +613,17 @@
           <n-card :title="'📋 ' + t('logs.title')" :bordered="false">
             <template #header-extra>
               <n-space align="center">
-                <n-checkbox v-model:checked="logsAutoRefresh" size="small" @update:checked="toggleLogsAutoRefresh">
+                <n-checkbox v-model:checked="autoRefreshEnabled" size="small" @update:checked="toggleAutoRefresh">
                   {{ t('logs.autoRefresh') }}
                 </n-checkbox>
+                <n-select
+                  v-if="autoRefreshEnabled"
+                  v-model:value="autoRefreshInterval"
+                  :options="refreshIntervalOptions"
+                  size="tiny"
+                  style="width: 70px;"
+                  @update:value="changeRefreshInterval"
+                />
                 <n-button quaternary circle size="small" @click="loadRequestLogs" :loading="logsLoading">
                   <template #icon>
                     <n-icon><RefreshIcon /></n-icon>
@@ -713,9 +721,17 @@
           <n-card :title="'📊 ' + t('health.title')" :bordered="false">
             <template #header-extra>
               <n-space align="center">
-                <n-checkbox v-model:checked="healthAutoRefresh" size="small" @update:checked="toggleHealthAutoRefresh">
+                <n-checkbox v-model:checked="autoRefreshEnabled" size="small" @update:checked="toggleAutoRefresh">
                   {{ t('health.autoRefresh') }}
                 </n-checkbox>
+                <n-select
+                  v-if="autoRefreshEnabled"
+                  v-model:value="autoRefreshInterval"
+                  :options="refreshIntervalOptions"
+                  size="tiny"
+                  style="width: 70px;"
+                  @update:value="changeRefreshInterval"
+                />
                 <n-button quaternary circle size="small" @click="loadHealthStatus" :loading="healthLoading">
                   <template #icon>
                     <n-icon><RefreshIcon /></n-icon>
@@ -791,9 +807,17 @@
           <n-card :title="'💬 ' + t('traces.title')" :bordered="false">
             <template #header-extra>
               <n-space align="center">
-                <n-checkbox v-model:checked="tracesAutoRefresh" size="small" @update:checked="toggleTracesAutoRefresh">
+                <n-checkbox v-model:checked="autoRefreshEnabled" size="small" @update:checked="toggleAutoRefresh">
                   {{ t('traces.autoRefresh') }}
                 </n-checkbox>
+                <n-select
+                  v-if="autoRefreshEnabled"
+                  v-model:value="autoRefreshInterval"
+                  :options="refreshIntervalOptions"
+                  size="tiny"
+                  style="width: 70px;"
+                  @update:value="changeRefreshInterval"
+                />
                 <n-button quaternary circle size="small" @click="loadAllTraces" :loading="tracesLoading">
                   <template #icon>
                     <n-icon><RefreshIcon /></n-icon>
@@ -2285,63 +2309,98 @@ const exportLogs = () => {
   }
 }
 
-// ========== 请求日志自动刷新 ==========
-const logsAutoRefresh = ref(localStorage.getItem('logsAutoRefresh') === 'true')
-let logsAutoRefreshTimer = null
+// ========== 统一自动刷新管理 ==========
+// 刷新间隔选项
+const refreshIntervalOptions = [
+  { label: '3秒', value: 3000 },
+  { label: '5秒', value: 5000 },
+  { label: '10秒', value: 10000 },
+  { label: '30秒', value: 30000 },
+]
 
-// 切换请求日志自动刷新
-const toggleLogsAutoRefresh = (enabled) => {
-  localStorage.setItem('logsAutoRefresh', enabled ? 'true' : 'false')
-  if (enabled) {
-    logsAutoRefreshTimer = setInterval(() => {
-      loadRequestLogs()
-    }, 5000)
-  } else {
-    if (logsAutoRefreshTimer) {
-      clearInterval(logsAutoRefreshTimer)
-      logsAutoRefreshTimer = null
+// 自动刷新状态
+const autoRefreshEnabled = ref(localStorage.getItem('autoRefreshEnabled') === 'true')
+const autoRefreshInterval = ref(parseInt(localStorage.getItem('autoRefreshInterval')) || 5000)
+let autoRefreshTimer = null
+
+// 启动自动刷新定时器
+const startAutoRefresh = () => {
+  stopAutoRefresh()
+  if (!autoRefreshEnabled.value) return
+  
+  autoRefreshTimer = setInterval(() => {
+    // 只在当前页面刷新
+    switch (currentPage.value) {
+      case 'logs':
+        loadRequestLogs()
+        break
+      case 'health':
+        loadHealthStatus()
+        break
+      case 'traces':
+        loadAllTraces()
+        break
     }
+  }, autoRefreshInterval.value)
+}
+
+// 停止自动刷新定时器
+const stopAutoRefresh = () => {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
   }
 }
 
-// 初始化请求日志自动刷新
-const initLogsAutoRefresh = () => {
-  if (logsAutoRefresh.value) {
-    logsAutoRefreshTimer = setInterval(() => {
-      loadRequestLogs()
-    }, 5000)
+// 切换自动刷新
+const toggleAutoRefresh = (enabled) => {
+  autoRefreshEnabled.value = enabled
+  localStorage.setItem('autoRefreshEnabled', enabled ? 'true' : 'false')
+  if (enabled) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
   }
 }
+
+// 改变刷新间隔
+const changeRefreshInterval = (interval) => {
+  autoRefreshInterval.value = interval
+  localStorage.setItem('autoRefreshInterval', interval.toString())
+  if (autoRefreshEnabled.value) {
+    startAutoRefresh() // 重启定时器
+  }
+}
+
+// 初始化自动刷新
+const initAutoRefresh = () => {
+  if (autoRefreshEnabled.value) {
+    startAutoRefresh()
+  }
+}
+
+// 兼容旧版本的引用（保持模板兼容）
+const logsAutoRefresh = computed({
+  get: () => autoRefreshEnabled.value && currentPage.value === 'logs',
+  set: (val) => toggleAutoRefresh(val)
+})
+const healthAutoRefresh = computed({
+  get: () => autoRefreshEnabled.value && currentPage.value === 'health',
+  set: (val) => toggleAutoRefresh(val)
+})
+const tracesAutoRefresh = computed({
+  get: () => autoRefreshEnabled.value && currentPage.value === 'traces',
+  set: (val) => toggleAutoRefresh(val)
+})
+
+// 兼容旧版本的 toggle 函数
+const toggleLogsAutoRefresh = toggleAutoRefresh
+const toggleHealthAutoRefresh = toggleAutoRefresh
+const toggleTracesAutoRefresh = toggleAutoRefresh
 
 // ========== 健康监控相关 ==========
 const healthData = ref([])
 const healthLoading = ref(false)
-const healthAutoRefresh = ref(localStorage.getItem('healthAutoRefresh') === 'true')
-let healthAutoRefreshTimer = null
-
-// 切换健康监控自动刷新
-const toggleHealthAutoRefresh = (enabled) => {
-  localStorage.setItem('healthAutoRefresh', enabled ? 'true' : 'false')
-  if (enabled) {
-    healthAutoRefreshTimer = setInterval(() => {
-      loadHealthStatus()
-    }, 5000)
-  } else {
-    if (healthAutoRefreshTimer) {
-      clearInterval(healthAutoRefreshTimer)
-      healthAutoRefreshTimer = null
-    }
-  }
-}
-
-// 初始化健康监控自动刷新
-const initHealthAutoRefresh = () => {
-  if (healthAutoRefresh.value) {
-    healthAutoRefreshTimer = setInterval(() => {
-      loadHealthStatus()
-    }, 5000)
-  }
-}
 
 // 加载健康状态
 const loadHealthStatus = async () => {
@@ -2369,8 +2428,6 @@ const allTracesPageSize = ref(20)
 const allTracesTotal = ref(0)
 const tracesLoading = ref(false)
 const tracesSearchQuery = ref('')
-const tracesAutoRefresh = ref(localStorage.getItem('tracesAutoRefresh') === 'true')
-let tracesAutoRefreshTimer = null
 let tracesSearchTimer = null
 
 // Traces 筛选器
@@ -2467,30 +2524,6 @@ const debounceSearchTraces = () => {
   tracesSearchTimer = setTimeout(() => {
     // 搜索已经通过 computed 实现，不需要额外操作
   }, 300)
-}
-
-// 切换自动刷新
-const toggleTracesAutoRefresh = (enabled) => {
-  localStorage.setItem('tracesAutoRefresh', enabled ? 'true' : 'false')
-  if (enabled) {
-    tracesAutoRefreshTimer = setInterval(() => {
-      loadAllTraces()
-    }, 5000)
-  } else {
-    if (tracesAutoRefreshTimer) {
-      clearInterval(tracesAutoRefreshTimer)
-      tracesAutoRefreshTimer = null
-    }
-  }
-}
-
-// 初始化 Traces 自动刷新
-const initTracesAutoRefresh = () => {
-  if (tracesAutoRefresh.value) {
-    tracesAutoRefreshTimer = setInterval(() => {
-      loadAllTraces()
-    }, 5000)
-  }
 }
 
 // 处理每页数量变化
@@ -3190,10 +3223,8 @@ onMounted(async () => {
   loadModelRanking()
   loadUsageSummary()
 
-  // 初始化自动刷新状态
-  initLogsAutoRefresh()
-  initHealthAutoRefresh()
-  initTracesAutoRefresh()
+  // 初始化统一自动刷新
+  initAutoRefresh()
 
   // 每 10 秒刷新一次秒级统计（实时数据）
   setInterval(() => {
@@ -3220,10 +3251,24 @@ watch(groupedRoutes, (newGroups) => {
   expandedGroups.value = Object.keys(newGroups)
 }, { deep: true })
 
-// Watch currentPage to load logs when switching to logs page
-watch(currentPage, (newPage) => {
-  if (newPage === 'logs') {
-    loadRequestLogs()
+// Watch currentPage to load data and manage auto-refresh when switching pages
+watch(currentPage, (newPage, oldPage) => {
+  // 加载当前页面数据
+  switch (newPage) {
+    case 'logs':
+      loadRequestLogs()
+      break
+    case 'health':
+      loadHealthStatus()
+      break
+    case 'traces':
+      loadAllTraces()
+      break
+  }
+  
+  // 如果自动刷新开启，重启定时器（让它立即开始计时）
+  if (autoRefreshEnabled.value && ['logs', 'health', 'traces'].includes(newPage)) {
+    startAutoRefresh()
   }
 })
 </script>
