@@ -181,6 +181,10 @@
     "enableFallbackDesc": "Automatically switch to other available routes when request fails (e.g., timeout, 5xx, 429 errors)",
     "fallbackEnabled": "Fallback enabled",
     "fallbackDisabled": "Fallback disabled",
+    "enableProxy": "Enable System Proxy",
+    "enableProxyDesc": "When enabled, use system proxy to access API; when disabled, connect directly",
+    "proxyEnabled": "System proxy enabled",
+    "proxyDisabled": "System proxy disabled",
     "enableTraces": "Enable Conversation Tracing",
     "enableTracesDesc": "Record complete request and response content for debugging and troubleshooting",
     "tracesEnabled": "Conversation tracing enabled",
@@ -263,7 +267,17 @@
     "failed": "Failed",
     "noLogs": "No request logs",
     "loadFailed": "Failed to load logs",
-    "unknownError": "Unknown error"
+    "unknownError": "Unknown error",
+    "autoRefresh": "Auto Refresh",
+    "timeRange": "Time Range",
+    "exportLogs": "Export Logs",
+    "exportSuccess": "Export successful",
+    "exportFailed": "Export failed",
+    "today": "Today",
+    "last7Days": "Last 7 Days",
+    "thisWeek": "This Week",
+    "last30Days": "Last 30 Days",
+    "thisMonth": "This Month"
   },
   "common": {
     "loading": "Loading...",
@@ -283,7 +297,8 @@
     "noData": "No request records",
     "loadFailed": "Failed to load health status",
     "routes": "Routes",
-    "model": "Model"
+    "model": "Model",
+    "autoRefresh": "Auto Refresh"
   },
   "traces": {
     "title": "Conversation Traces",
@@ -301,6 +316,17 @@
     "request": "Request Content",
     "response": "Response Content",
     "search": "Search model/IP/content",
-    "autoRefresh": "Auto refresh"
+    "autoRefresh": "Auto Refresh",
+    "timeRange": "Time Range",
+    "statusFilter": "Status Filter",
+    "allStatus": "All",
+    "exportTraces": "Export Records",
+    "exportSuccess": "Export successful",
+    "exportFailed": "Export failed",
+    "today": "Today",
+    "last7Days": "Last 7 Days",
+    "thisWeek": "This Week",
+    "last30Days": "Last 30 Days",
+    "thisMonth": "This Month"
   }
 }

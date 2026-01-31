@@ -87,13 +87,47 @@ func (s *ProxyService) sendContentBlockStop(writer io.Writer, flusher http.Flush
 }
 
 func NewProxyService(routeService *RouteService, cfg *config.Config) *ProxyService {
+	// 根据配置决定是否使用系统代理
+	var transport *http.Transport
+	if cfg.ProxyEnabled {
+		// 使用系统代理
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}
+		log.Info("ProxyService initialized with system proxy enabled")
+	} else {
+		// 禁用代理，直连
+		transport = &http.Transport{
+			Proxy: nil,
+		}
+		log.Info("ProxyService initialized with proxy disabled (direct connection)")
+	}
+
 	return &ProxyService{
 		routeService: routeService,
 		config:       cfg,
 		httpClient: &http.Client{
-			Timeout: 0, // 不设置超时，因为大模型生成非常耗时
+			Timeout:   0, // 不设置超时，因为大模型生成非常耗时
+			Transport: transport,
 		},
 	}
+}
+
+// UpdateProxySettings 动态更新代理设置
+func (s *ProxyService) UpdateProxySettings(proxyEnabled bool) {
+	var transport *http.Transport
+	if proxyEnabled {
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+		}
+		log.Info("ProxyService: system proxy enabled")
+	} else {
+		transport = &http.Transport{
+			Proxy: nil,
+		}
+		log.Info("ProxyService: proxy disabled (direct connection)")
+	}
+	s.httpClient.Transport = transport
 }
 
 // SaveTraceIfEnabled 如果启用了 Traces，保存对话记录

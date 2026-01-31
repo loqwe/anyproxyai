@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides">
+  <n-config-provider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides" :locale="naiveLocale" :date-locale="naiveDateLocale">
     <n-layout style="height: 100vh;">
       <!-- Top Bar -->
       <n-layout-header bordered style="height: 64px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between;">
@@ -612,7 +612,10 @@
         <div v-if="currentPage === 'logs'">
           <n-card :title="'📋 ' + t('logs.title')" :bordered="false">
             <template #header-extra>
-              <n-space>
+              <n-space align="center">
+                <n-checkbox v-model:checked="logsAutoRefresh" size="small" @update:checked="toggleLogsAutoRefresh">
+                  {{ t('logs.autoRefresh') }}
+                </n-checkbox>
                 <n-button quaternary circle size="small" @click="loadRequestLogs" :loading="logsLoading">
                   <template #icon>
                     <n-icon><RefreshIcon /></n-icon>
@@ -622,7 +625,7 @@
             </template>
 
             <!-- 筛选器 -->
-            <n-space style="margin-bottom: 16px;" align="center">
+            <n-space style="margin-bottom: 16px;" align="center" wrap>
               <n-input
                 v-model:value="logsFilter.model"
                 :placeholder="t('logs.filterModel')"
@@ -653,8 +656,21 @@
                 clearable
                 @update:value="loadRequestLogs"
               />
+              <n-date-picker
+                v-model:value="logsFilter.timeRange"
+                type="datetimerange"
+                :placeholder="t('logs.timeRange')"
+                size="small"
+                clearable
+                style="width: 340px;"
+                :shortcuts="timeRangeShortcuts"
+                @update:value="loadRequestLogs"
+              />
               <n-button size="small" @click="clearLogsFilter">
                 {{ t('logs.clearFilter') }}
+              </n-button>
+              <n-button size="small" type="primary" @click="exportLogs">
+                {{ t('logs.exportLogs') }}
               </n-button>
             </n-space>
 
@@ -696,11 +712,16 @@
         <div v-if="currentPage === 'health'">
           <n-card :title="'📊 ' + t('health.title')" :bordered="false">
             <template #header-extra>
-              <n-button quaternary circle size="small" @click="loadHealthStatus" :loading="healthLoading">
-                <template #icon>
-                  <n-icon><RefreshIcon /></n-icon>
-                </template>
-              </n-button>
+              <n-space align="center">
+                <n-checkbox v-model:checked="healthAutoRefresh" size="small" @update:checked="toggleHealthAutoRefresh">
+                  {{ t('health.autoRefresh') }}
+                </n-checkbox>
+                <n-button quaternary circle size="small" @click="loadHealthStatus" :loading="healthLoading">
+                  <template #icon>
+                    <n-icon><RefreshIcon /></n-icon>
+                  </template>
+                </n-button>
+              </n-space>
             </template>
 
             <n-spin :show="healthLoading">
@@ -770,18 +791,6 @@
           <n-card :title="'💬 ' + t('traces.title')" :bordered="false">
             <template #header-extra>
               <n-space align="center">
-                <n-input
-                  v-model:value="tracesSearchQuery"
-                  :placeholder="t('traces.search')"
-                  clearable
-                  size="small"
-                  style="width: 200px;"
-                  @update:value="debounceSearchTraces"
-                >
-                  <template #prefix>
-                    <n-icon><SearchIcon /></n-icon>
-                  </template>
-                </n-input>
                 <n-checkbox v-model:checked="tracesAutoRefresh" size="small" @update:checked="toggleTracesAutoRefresh">
                   {{ t('traces.autoRefresh') }}
                 </n-checkbox>
@@ -789,6 +798,9 @@
                   <template #icon>
                     <n-icon><RefreshIcon /></n-icon>
                   </template>
+                </n-button>
+                <n-button size="small" type="primary" @click="exportTraces">
+                  {{ t('traces.exportTraces') }}
                 </n-button>
                 <n-popconfirm @positive-click="clearAllTraces">
                   <template #trigger>
@@ -802,6 +814,41 @@
                 </n-popconfirm>
               </n-space>
             </template>
+
+            <!-- 筛选器 -->
+            <n-space style="margin-bottom: 16px;" align="center" wrap>
+              <n-input
+                v-model:value="tracesSearchQuery"
+                :placeholder="t('traces.search')"
+                clearable
+                size="small"
+                style="width: 200px;"
+                @update:value="debounceSearchTraces"
+              >
+                <template #prefix>
+                  <n-icon><SearchIcon /></n-icon>
+                </template>
+              </n-input>
+              <n-select
+                v-model:value="tracesFilter.success"
+                :placeholder="t('traces.statusFilter')"
+                :options="tracesStatusOptions"
+                style="width: 120px;"
+                size="small"
+                clearable
+                @update:value="loadAllTraces"
+              />
+              <n-date-picker
+                v-model:value="tracesFilter.timeRange"
+                type="datetimerange"
+                :placeholder="t('traces.timeRange')"
+                size="small"
+                clearable
+                style="width: 340px;"
+                :shortcuts="timeRangeShortcuts"
+                @update:value="loadAllTraces"
+              />
+            </n-space>
 
             <n-spin :show="tracesLoading">
               <n-list bordered style="max-height: calc(100vh - 320px); overflow-y: auto;">
@@ -939,6 +986,13 @@
                   </n-checkbox>
                   <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
                     {{ t('settings.enableFallbackDesc') }}
+                  </n-text>
+
+                  <n-checkbox v-model:checked="settings.proxyEnabled" @update:checked="toggleProxyEnabled">
+                    {{ t('settings.enableProxy') }}
+                  </n-checkbox>
+                  <n-text depth="3" style="font-size: 12px; margin-left: 24px;">
+                    {{ t('settings.enableProxyDesc') }}
                   </n-text>
 
                   <n-checkbox v-model:checked="settings.tracesEnabled" @update:checked="toggleTracesEnabled">
@@ -1148,7 +1202,7 @@
 <script setup>
 import { ref, h, onMounted, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { darkTheme, NButton, NIcon, NTag, NSpace, NModal, NTooltip, NSwitch } from 'naive-ui'
+import { darkTheme, NButton, NIcon, NTag, NSpace, NModal, NTooltip, NSwitch, zhCN, dateZhCN, enUS, dateEnUS } from 'naive-ui'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -1220,6 +1274,10 @@ const { t, locale } = useI18n()
 const showLanguageModal = ref(false)
 const currentLocale = ref(localStorage.getItem('app-locale') || 'zh-CN')
 
+// Naive UI locale - 根据当前语言返回相应的 locale
+const naiveLocale = computed(() => currentLocale.value === 'zh-CN' ? zhCN : enUS)
+const naiveDateLocale = computed(() => currentLocale.value === 'zh-CN' ? dateZhCN : dateEnUS)
+
 const switchLanguage = (lang) => {
   locale.value = lang
   currentLocale.value = lang
@@ -1229,12 +1287,17 @@ const switchLanguage = (lang) => {
 }
 
 // Page State
-const currentPage = ref('home') // 'home' | 'models' | 'stats' | 'settings'
+const currentPage = ref(localStorage.getItem('currentPage') || 'home') // 'home' | 'models' | 'stats' | 'settings'
 const refreshing = ref(false)
 const compressing = ref(false)
 
+// 监听页面切换并保存
+watch(currentPage, (newPage) => {
+  localStorage.setItem('currentPage', newPage)
+})
+
 // Theme
-const isDark = ref(true)
+const isDark = ref(localStorage.getItem('isDark') !== 'false') // 默认深色模式
 const themeOverrides = {
   common: {
     primaryColor: '#18A058',
@@ -1243,23 +1306,56 @@ const themeOverrides = {
 
 const toggleTheme = () => {
   isDark.value = !isDark.value
+  localStorage.setItem('isDark', isDark.value ? 'true' : 'false')
   showMessage("info", isDark.value ? t('messages.switchedToDark') : t('messages.switchedToLight'))
 }
 
-// 刷新所有数据
+// 刷新所有数据（根据当前页面动态加载）
 const refreshAll = async () => {
   refreshing.value = true
   try {
-    await Promise.all([
+    // 基础数据始终加载
+    const baseLoads = [
       loadRoutes(),
       loadStats(),
       loadConfig(),
-      loadDailyStats(),
-      loadHourlyStats(),
-      loadSecondlyStats(),
-      loadModelRanking(),
-      loadUsageSummary()
-    ])
+    ]
+    
+    // 根据当前页面加载相关数据
+    switch (currentPage.value) {
+      case 'home':
+        // Home page loads basic data only
+        break
+      case 'stats':
+        baseLoads.push(
+          loadDailyStats(),
+          loadHourlyStats(),
+          loadSecondlyStats(),
+          loadModelRanking(),
+          loadUsageSummary()
+        )
+        break
+      case 'logs':
+        baseLoads.push(loadRequestLogs())
+        break
+      case 'health':
+        baseLoads.push(loadHealthStatus())
+        break
+      case 'traces':
+        baseLoads.push(loadAllTraces())
+        break
+      default:
+        // For other pages, load stats data
+        baseLoads.push(
+          loadDailyStats(),
+          loadHourlyStats(),
+          loadSecondlyStats(),
+          loadModelRanking(),
+          loadUsageSummary()
+        )
+    }
+    
+    await Promise.all(baseLoads)
     showMessage("success", t('messages.dataRefreshed'))
   } catch (error) {
     showMessage("error", t('messages.refreshFailed') + ': ' + error)
@@ -1275,6 +1371,7 @@ const settings = ref({
   minimizeToTray: false,
   enableFileLog: false,
   fallbackEnabled: true,
+  proxyEnabled: true,
   tracesEnabled: false,
   tracesRetentionDays: 7,
   port: 5642,
@@ -1391,6 +1488,21 @@ const toggleFallbackEnabled = async (enabled) => {
   } catch (error) {
     showMessage("error", t('messages.settingFailed') + ': ' + error)
     settings.value.fallbackEnabled = !enabled // 恢复状态
+  }
+}
+
+// 切换系统代理
+const toggleProxyEnabled = async (enabled) => {
+  if (!window.go || !window.go.main || !window.go.main.App) {
+    showMessage("error", t('messages.wailsNotReady'))
+    return
+  }
+  try {
+    await window.go.main.App.SetProxyEnabled(enabled)
+    showMessage("success", enabled ? t('settings.proxyEnabled') : t('settings.proxyDisabled'))
+  } catch (error) {
+    showMessage("error", t('messages.settingFailed') + ': ' + error)
+    settings.value.proxyEnabled = !enabled // 恢复状态
   }
 }
 
@@ -1908,7 +2020,51 @@ const logsFilter = ref({
   model: '',
   style: null,
   success: null,
+  timeRange: null, // [startTimestamp, endTimestamp]
 })
+
+// 时间范围快捷选项
+const timeRangeShortcuts = {
+  '今天': () => {
+    const now = new Date()
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    return [start.getTime(), now.getTime()]
+  },
+  '近 7 天': () => {
+    const now = new Date()
+    const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    return [start.getTime(), now.getTime()]
+  },
+  '本周': () => {
+    const now = new Date()
+    const dayOfWeek = now.getDay()
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
+    return [start.getTime(), now.getTime()]
+  },
+  '近 30 天': () => {
+    const now = new Date()
+    const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    return [start.getTime(), now.getTime()]
+  },
+  '本月': () => {
+    const now = new Date()
+    const start = new Date(now.getFullYear(), now.getMonth(), 1)
+    return [start.getTime(), now.getTime()]
+  }
+}
+
+// 将时间戳转换为字符串格式 (YYYY-MM-DD HH:mm:ss)
+const formatTimestamp = (ts) => {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  const ss = String(d.getSeconds()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`
+}
 
 // 筛选器选项
 const styleOptions = computed(() => [
@@ -2045,13 +2201,23 @@ const loadRequestLogs = async () => {
   }
   logsLoading.value = true
   try {
+    // Process time range
+    let startTime = ''
+    let endTime = ''
+    if (logsFilter.value.timeRange && logsFilter.value.timeRange.length === 2) {
+      startTime = formatTimestamp(logsFilter.value.timeRange[0])
+      endTime = formatTimestamp(logsFilter.value.timeRange[1])
+    }
+    
     // 通过 Wails v3 shim 调用后端服务
     const data = await window.go.main.App.GetRequestLogs(
       logsPage.value,
       logsPageSize.value,
       logsFilter.value.model || '',
       logsFilter.value.style || '',
-      logsFilter.value.success || ''
+      logsFilter.value.success || '',
+      startTime,
+      endTime
     )
     logsData.value = data.data || []
     logsTotal.value = data.total || 0
@@ -2090,14 +2256,92 @@ const clearLogsFilter = () => {
     model: '',
     style: null,
     success: null,
+    timeRange: null,
   }
   logsPage.value = 1
   loadRequestLogs()
 }
 
+// 导出日志
+const exportLogs = () => {
+  if (logsData.value.length === 0) {
+    showMessage("warning", t('logs.noLogs'))
+    return
+  }
+  try {
+    const jsonStr = JSON.stringify(logsData.value, null, 2)
+    const blob = new Blob([jsonStr], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `request_logs_${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    showMessage("success", t('logs.exportSuccess'))
+  } catch (error) {
+    showMessage("error", t('logs.exportFailed') + ': ' + error)
+  }
+}
+
+// ========== 请求日志自动刷新 ==========
+const logsAutoRefresh = ref(localStorage.getItem('logsAutoRefresh') === 'true')
+let logsAutoRefreshTimer = null
+
+// 切换请求日志自动刷新
+const toggleLogsAutoRefresh = (enabled) => {
+  localStorage.setItem('logsAutoRefresh', enabled ? 'true' : 'false')
+  if (enabled) {
+    logsAutoRefreshTimer = setInterval(() => {
+      loadRequestLogs()
+    }, 5000)
+  } else {
+    if (logsAutoRefreshTimer) {
+      clearInterval(logsAutoRefreshTimer)
+      logsAutoRefreshTimer = null
+    }
+  }
+}
+
+// 初始化请求日志自动刷新
+const initLogsAutoRefresh = () => {
+  if (logsAutoRefresh.value) {
+    logsAutoRefreshTimer = setInterval(() => {
+      loadRequestLogs()
+    }, 5000)
+  }
+}
+
 // ========== 健康监控相关 ==========
 const healthData = ref([])
 const healthLoading = ref(false)
+const healthAutoRefresh = ref(localStorage.getItem('healthAutoRefresh') === 'true')
+let healthAutoRefreshTimer = null
+
+// 切换健康监控自动刷新
+const toggleHealthAutoRefresh = (enabled) => {
+  localStorage.setItem('healthAutoRefresh', enabled ? 'true' : 'false')
+  if (enabled) {
+    healthAutoRefreshTimer = setInterval(() => {
+      loadHealthStatus()
+    }, 5000)
+  } else {
+    if (healthAutoRefreshTimer) {
+      clearInterval(healthAutoRefreshTimer)
+      healthAutoRefreshTimer = null
+    }
+  }
+}
+
+// 初始化健康监控自动刷新
+const initHealthAutoRefresh = () => {
+  if (healthAutoRefresh.value) {
+    healthAutoRefreshTimer = setInterval(() => {
+      loadHealthStatus()
+    }, 5000)
+  }
+}
 
 // 加载健康状态
 const loadHealthStatus = async () => {
@@ -2125,9 +2369,22 @@ const allTracesPageSize = ref(20)
 const allTracesTotal = ref(0)
 const tracesLoading = ref(false)
 const tracesSearchQuery = ref('')
-const tracesAutoRefresh = ref(false)
+const tracesAutoRefresh = ref(localStorage.getItem('tracesAutoRefresh') === 'true')
 let tracesAutoRefreshTimer = null
 let tracesSearchTimer = null
+
+// Traces 筛选器
+const tracesFilter = ref({
+  success: null, // null/"true"/"false"
+  timeRange: null, // [startTimestamp, endTimestamp]
+})
+
+// Traces 状态筛选选项
+const tracesStatusOptions = computed(() => [
+  { label: t('traces.allStatus'), value: null },
+  { label: t('logs.success'), value: 'true' },
+  { label: t('logs.failed'), value: 'false' },
+])
 
 // 过滤后的 traces
 const filteredTraces = computed(() => {
@@ -2152,7 +2409,22 @@ const loadAllTraces = async () => {
   }
   tracesLoading.value = true
   try {
-    const data = await window.go.main.App.GetAllTraces(allTracesPage.value, allTracesPageSize.value)
+    // Process time range and status filter
+    let startTime = ''
+    let endTime = ''
+    if (tracesFilter.value.timeRange && tracesFilter.value.timeRange.length === 2) {
+      startTime = formatTimestamp(tracesFilter.value.timeRange[0])
+      endTime = formatTimestamp(tracesFilter.value.timeRange[1])
+    }
+    const success = tracesFilter.value.success || ''
+    
+    const data = await window.go.main.App.GetAllTraces(
+      allTracesPage.value,
+      allTracesPageSize.value,
+      success,
+      startTime,
+      endTime
+    )
     allTraces.value = data.traces || []
     allTracesTotal.value = data.total || 0
   } catch (error) {
@@ -2161,6 +2433,29 @@ const loadAllTraces = async () => {
     allTraces.value = []
   } finally {
     tracesLoading.value = false
+  }
+}
+
+// 导出 Traces
+const exportTraces = () => {
+  if (allTraces.value.length === 0) {
+    showMessage("warning", t('traces.noTraces'))
+    return
+  }
+  try {
+    const jsonStr = JSON.stringify(allTraces.value, null, 2)
+    const blob = new Blob([jsonStr], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `traces_${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    showMessage("success", t('traces.exportSuccess'))
+  } catch (error) {
+    showMessage("error", t('traces.exportFailed') + ': ' + error)
   }
 }
 
@@ -2176,6 +2471,7 @@ const debounceSearchTraces = () => {
 
 // 切换自动刷新
 const toggleTracesAutoRefresh = (enabled) => {
+  localStorage.setItem('tracesAutoRefresh', enabled ? 'true' : 'false')
   if (enabled) {
     tracesAutoRefreshTimer = setInterval(() => {
       loadAllTraces()
@@ -2185,6 +2481,15 @@ const toggleTracesAutoRefresh = (enabled) => {
       clearInterval(tracesAutoRefreshTimer)
       tracesAutoRefreshTimer = null
     }
+  }
+}
+
+// 初始化 Traces 自动刷新
+const initTracesAutoRefresh = () => {
+  if (tracesAutoRefresh.value) {
+    tracesAutoRefreshTimer = setInterval(() => {
+      loadAllTraces()
+    }, 5000)
   }
 }
 
@@ -2595,6 +2900,7 @@ const loadConfig = async () => {
     settings.value.autoStart = data.autoStart || false
     settings.value.enableFileLog = data.enableFileLog || false
     settings.value.fallbackEnabled = data.fallbackEnabled !== false // 默认启用
+    settings.value.proxyEnabled = data.proxyEnabled !== false // 默认启用
     settings.value.tracesEnabled = data.tracesEnabled || false
     settings.value.tracesRetentionDays = data.tracesRetentionDays || 7
     settings.value.port = data.port || 5642
@@ -2884,6 +3190,11 @@ onMounted(async () => {
   loadModelRanking()
   loadUsageSummary()
 
+  // 初始化自动刷新状态
+  initLogsAutoRefresh()
+  initHealthAutoRefresh()
+  initTracesAutoRefresh()
+
   // 每 10 秒刷新一次秒级统计（实时数据）
   setInterval(() => {
     loadSecondlyStats()
@@ -3128,15 +3439,19 @@ watch(currentPage, (newPage) => {
 
 .status-bar {
   display: flex;
-  gap: 2px;
+  flex-wrap: wrap;
+  gap: 1px;
   align-items: center;
+  max-width: 100%;
+  row-gap: 2px;
 }
 
 .status-dot {
-  width: 8px;
-  height: 20px;
-  border-radius: 2px;
+  width: 4px;
+  height: 16px;
+  border-radius: 1px;
   transition: transform 0.15s;
+  flex-shrink: 0;
 }
 
 .status-dot:hover {

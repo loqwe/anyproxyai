@@ -14,6 +14,7 @@ type Config struct {
 	DatabasePath          string `json:"database_path"`
 	LocalAPIKey           string `json:"local_api_key"`
 	FallbackEnabled       bool   `json:"fallback_enabled"`
+	ProxyEnabled          bool   `json:"proxy_enabled"`           // 是否使用系统代理
 	RedirectEnabled       bool   `json:"redirect_enabled"`
 	RedirectKeyword       string `json:"redirect_keyword"`
 	RedirectTargetModel   string `json:"redirect_target_model"`
@@ -38,6 +39,7 @@ func LoadConfig() *Config {
 		DatabasePath:          "routes.db",
 		LocalAPIKey:           "sk-local-default-key",
 		FallbackEnabled:       true,
+		ProxyEnabled:          true,  // 默认启用系统代理
 		RedirectEnabled:       false,
 		RedirectKeyword:       "proxy_auto",
 		RedirectTargetModel:   "",
@@ -47,7 +49,7 @@ func LoadConfig() *Config {
 		AutoStart:             false,
 		EnableFileLog:         false,
 		TracesEnabled:         false, // 默认关闭，因为会占用存储
-		TracesRetentionDays:   7,     // 默认保留7天
+		TracesRetentionDays:   7,     // 默认保疙7天
 		TracesSessionTimeout:  30,    // 默认30分钟超时
 		Language:              "en-US",
 		configPath:            configPath,

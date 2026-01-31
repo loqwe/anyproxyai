@@ -396,6 +396,15 @@ func (s *RouteService) GetRequestLogs(page, pageSize int, filters map[string]str
 			conditions = append(conditions, "success = 0")
 		}
 	}
+	// Time range filtering: startTime and endTime in "2006-01-02 15:04:05" format
+	if startTime, ok := filters["start_time"]; ok && startTime != "" {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, startTime)
+	}
+	if endTime, ok := filters["end_time"]; ok && endTime != "" {
+		conditions = append(conditions, "created_at <= ?")
+		args = append(args, endTime)
+	}
 
 	whereClause := ""
 	if len(conditions) > 0 {
@@ -1689,26 +1698,55 @@ func (s *RouteService) GetTracesCount() (int64, error) {
 	return count, err
 }
 
-// GetAllTraces 获取所有 trace 记录（按时间倒序，分页）
-func (s *RouteService) GetAllTraces(page, pageSize int) ([]database.ConversationTrace, int64, error) {
+// GetAllTraces 获取所有 trace 记录（按时间倒序，分页，支持筛选）
+func (s *RouteService) GetAllTraces(page, pageSize int, filters map[string]string) ([]database.ConversationTrace, int64, error) {
 	offset := (page - 1) * pageSize
 	traceDB := s.getTraceDB()
 
+	// Build WHERE clause
+	var conditions []string
+	var args []interface{}
+
+	if success, ok := filters["success"]; ok && success != "" {
+		if success == "true" {
+			conditions = append(conditions, "success = 1")
+		} else if success == "false" {
+			conditions = append(conditions, "success = 0")
+		}
+	}
+	if startTime, ok := filters["start_time"]; ok && startTime != "" {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, startTime)
+	}
+	if endTime, ok := filters["end_time"]; ok && endTime != "" {
+		conditions = append(conditions, "created_at <= ?")
+		args = append(args, endTime)
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Count query
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM conversation_traces %s", whereClause)
 	var total int64
-	if err := traceDB.QueryRow(`SELECT COUNT(*) FROM conversation_traces`).Scan(&total); err != nil {
+	if err := traceDB.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	query := `
+	// Data query
+	query := fmt.Sprintf(`
 		SELECT id, session_id, remote_ip, model, provider_model, provider_name,
 		       request_content, response_content, request_tokens, response_tokens, total_tokens,
 		       success, error_message, style, is_stream, proxy_time_ms, created_at
-		FROM conversation_traces
+		FROM conversation_traces %s
 		ORDER BY created_at DESC
 		LIMIT ? OFFSET ?
-	`
+	`, whereClause)
 
-	rows, err := traceDB.Query(query, pageSize, offset)
+	args = append(args, pageSize, offset)
+	rows, err := traceDB.Query(query, args...)
 	if err != nil {
 		return nil, 0, err
 	}

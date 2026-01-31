@@ -234,6 +234,7 @@ func (a *AppService) GetConfig() map[string]interface{} {
 		"autoStart":             a.Config.AutoStart,
 		"enableFileLog":         a.Config.EnableFileLog,
 		"fallbackEnabled":       a.Config.FallbackEnabled,
+		"proxyEnabled":          a.Config.ProxyEnabled,
 		"tracesEnabled":         a.Config.TracesEnabled,
 		"tracesRetentionDays":   a.Config.TracesRetentionDays,
 		"port":                  a.Config.Port,
@@ -375,6 +376,30 @@ func (a *AppService) SetFallbackEnabled(enabled bool) error {
 	return nil
 }
 
+// GetProxyEnabled 获取是否启用系统代理
+func (a *AppService) GetProxyEnabled() bool {
+	return a.Config.ProxyEnabled
+}
+
+// SetProxyEnabled 设置是否启用系统代理
+func (a *AppService) SetProxyEnabled(enabled bool) error {
+	log.Infof("Setting proxy enabled: %v", enabled)
+	a.Config.ProxyEnabled = enabled
+
+	if err := a.Config.Save(); err != nil {
+		log.Errorf("Failed to save config: %v", err)
+		return fmt.Errorf("failed to save config: %v", err)
+	}
+
+	// 动态更新 ProxyService 的 httpClient
+	if a.ProxyService != nil {
+		a.ProxyService.UpdateProxySettings(enabled)
+	}
+
+	log.Info("Proxy setting updated successfully")
+	return nil
+}
+
 // RestartApp 重启应用
 func (a *AppService) RestartApp() error {
 	log.Info("Restarting application...")
@@ -433,7 +458,8 @@ type RequestLogsResult struct {
 }
 
 // GetRequestLogs 获取请求日志（支持分页和筛选）
-func (a *AppService) GetRequestLogs(page, pageSize int, model, style, success string) (RequestLogsResult, error) {
+// startTime/endTime format: "2006-01-02 15:04:05" or empty string
+func (a *AppService) GetRequestLogs(page, pageSize int, model, style, success, startTime, endTime string) (RequestLogsResult, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -451,6 +477,12 @@ func (a *AppService) GetRequestLogs(page, pageSize int, model, style, success st
 	}
 	if success != "" {
 		filters["success"] = success
+	}
+	if startTime != "" {
+		filters["start_time"] = startTime
+	}
+	if endTime != "" {
+		filters["end_time"] = endTime
 	}
 
 	logs, total, err := a.RouteService.GetRequestLogs(page, pageSize, filters)
@@ -510,7 +542,7 @@ type GroupHealthInfo struct {
 
 // GetHealthStatus 获取所有路由的健康状态（按分组）
 func (a *AppService) GetHealthStatus() ([]GroupHealthInfo, error) {
-	const historyCount = 50 // Display last 50 requests per route
+	const historyCount = 100 // Display last 100 requests per route
 	
 	results, err := a.RouteService.GetHealthStatus(historyCount)
 	if err != nil {
@@ -711,8 +743,10 @@ type AllTracesResult struct {
 	PageSize int               `json:"page_size"`
 }
 
-// GetAllTraces 获取所有 trace 记录（按时间倒序，分页）
-func (a *AppService) GetAllTraces(page, pageSize int) (AllTracesResult, error) {
+// GetAllTraces 获取所有 trace 记录（按时间倒序，分页，支持筛选）
+// success: "true"/"false"/"" (empty = all)
+// startTime/endTime format: "2006-01-02 15:04:05" or empty string
+func (a *AppService) GetAllTraces(page, pageSize int, success, startTime, endTime string) (AllTracesResult, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -720,7 +754,19 @@ func (a *AppService) GetAllTraces(page, pageSize int) (AllTracesResult, error) {
 		pageSize = 20
 	}
 
-	traces, total, err := a.RouteService.GetAllTraces(page, pageSize)
+	// Build filters
+	filters := make(map[string]string)
+	if success != "" {
+		filters["success"] = success
+	}
+	if startTime != "" {
+		filters["start_time"] = startTime
+	}
+	if endTime != "" {
+		filters["end_time"] = endTime
+	}
+
+	traces, total, err := a.RouteService.GetAllTraces(page, pageSize, filters)
 	if err != nil {
 		return AllTracesResult{}, err
 	}

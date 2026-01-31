@@ -181,6 +181,10 @@
     "enableFallbackDesc": "当请求失败时自动切换到其他可用路由（如超时、5xx、429等错误）",
     "fallbackEnabled": "已启用故障转移",
     "fallbackDisabled": "已禁用故障转移",
+    "enableProxy": "启用系统代理",
+    "enableProxyDesc": "启用后会使用系统代理访问 API，关闭则直连",
+    "proxyEnabled": "已启用系统代理",
+    "proxyDisabled": "已禁用系统代理",
     "enableTraces": "启用对话追踪",
     "enableTracesDesc": "记录完整的请求和响应内容，用于调试和问题排查",
     "tracesEnabled": "已启用对话追踪",
@@ -263,7 +267,17 @@
     "failed": "失败",
     "noLogs": "暂无请求日志",
     "loadFailed": "加载日志失败",
-    "unknownError": "未知错误"
+    "unknownError": "未知错误",
+    "autoRefresh": "自动刷新",
+    "timeRange": "时间范围",
+    "exportLogs": "导出日志",
+    "exportSuccess": "导出成功",
+    "exportFailed": "导出失败",
+    "today": "今天",
+    "last7Days": "近 7 天",
+    "thisWeek": "本周",
+    "last30Days": "近 30 天",
+    "thisMonth": "本月"
   },
   "common": {
     "loading": "加载中...",
@@ -283,7 +297,8 @@
     "noData": "暂无请求记录",
     "loadFailed": "加载健康状态失败",
     "routes": "路由",
-    "model": "模型"
+    "model": "模型",
+    "autoRefresh": "自动刷新"
   },
   "traces": {
     "title": "对话追踪",
@@ -301,6 +316,17 @@
     "request": "请求内容",
     "response": "响应内容",
     "search": "搜索模型/IP/内容",
-    "autoRefresh": "自动刷新"
+    "autoRefresh": "自动刷新",
+    "timeRange": "时间范围",
+    "statusFilter": "状态筛选",
+    "allStatus": "全部",
+    "exportTraces": "导出记录",
+    "exportSuccess": "导出成功",
+    "exportFailed": "导出失败",
+    "today": "今天",
+    "last7Days": "近 7 天",
+    "thisWeek": "本周",
+    "last30Days": "近 30 天",
+    "thisMonth": "本月"
   }
 }

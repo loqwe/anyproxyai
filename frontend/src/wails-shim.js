@@ -61,6 +61,8 @@ const createWailsShim = () => {
     SetAutoStart: (enabled) => callService('SetAutoStart', enabled),
     SetEnableFileLog: (enabled) => callService('SetEnableFileLog', enabled),
     SetFallbackEnabled: (enabled) => callService('SetFallbackEnabled', enabled),
+    GetProxyEnabled: () => callService('GetProxyEnabled'),
+    SetProxyEnabled: (enabled) => callService('SetProxyEnabled', enabled),
     
     // Remote models
     FetchRemoteModels: (apiUrl, apiKey) => callService('FetchRemoteModels', apiUrl, apiKey),
@@ -73,9 +75,9 @@ const createWailsShim = () => {
     CompressDatabase: () => callService('CompressDatabase'),
     GetUsageSummary: () => callService('GetUsageSummary'),
 
-    // Request logs
-    GetRequestLogs: (page, pageSize, model, style, success) =>
-      callService('GetRequestLogs', page, pageSize, model, style, success),
+    // Request logs (with time range support)
+    GetRequestLogs: (page, pageSize, model, style, success, startTime, endTime) =>
+      callService('GetRequestLogs', page, pageSize, model, style, success, startTime || '', endTime || ''),
 
     // Health monitoring
     GetHealthStatus: () => callService('GetHealthStatus'),
@@ -89,7 +91,8 @@ const createWailsShim = () => {
     SetTracesSessionTimeout: (minutes) => callService('SetTracesSessionTimeout', minutes),
     GetTraceSessions: (page, pageSize) => callService('GetTraceSessions', page, pageSize),
     GetTracesBySession: (sessionID) => callService('GetTracesBySession', sessionID),
-    GetAllTraces: (page, pageSize) => callService('GetAllTraces', page, pageSize),
+    GetAllTraces: (page, pageSize, success, startTime, endTime) => 
+      callService('GetAllTraces', page, pageSize, success || '', startTime || '', endTime || ''),
     ClearOldTraces: (beforeDays) => callService('ClearOldTraces', beforeDays),
     ClearAllTraces: () => callService('ClearAllTraces'),
     GetTracesCount: () => callService('GetTracesCount'),
